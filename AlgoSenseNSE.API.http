@@ -1,0 +1,6 @@
+@AlgoSenseNSE.API_HostAddress = http://localhost:5150
+
+GET {{AlgoSenseNSE.API_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
