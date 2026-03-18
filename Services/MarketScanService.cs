@@ -2,8 +2,6 @@
 
 namespace AlgoSenseNSE.API.Services
 {
-    // This is the brain — orchestrates everything
-    // and implements the tiered scanning approach
     public class MarketScanService
     {
         private readonly AngelOneService _angel;
@@ -15,7 +13,6 @@ namespace AlgoSenseNSE.API.Services
         private readonly ILogger<MarketScanService> _logger;
         private readonly IConfiguration _config;
 
-        // In-memory state
         private Dictionary<string, string> _symbolTokenMap = new();
         private List<string> _tier1Symbols = new();
         private List<string> _tier2Symbols = new();
@@ -52,177 +49,126 @@ namespace AlgoSenseNSE.API.Services
         {
             _logger.LogInformation("🚀 Initializing market scan...");
 
-            // Login to Angel One
             await _angel.LoginAsync();
 
-            // Build symbol → token map for all NSE+BSE
-            var allSymbols = await GetAllNseBseSymbolsAsync();
-            _symbolTokenMap = await _angel
-                .GetSymbolTokenMapAsync(allSymbols);
+            var allSymbols = new List<string>();
+            _symbolTokenMap = await _angel.GetSymbolTokenMapAsync(allSymbols);
 
-            // Run first full scan
             await RunFullDailyScanAsync();
 
             _logger.LogInformation(
-                "✅ Initialization complete. " +
-                "Tracking {t1} Tier1, {t2} Tier2 stocks",
+                "✅ Initialization complete. Tracking {t1} Tier1, {t2} Tier2 stocks",
                 _tier1Symbols.Count, _tier2Symbols.Count);
         }
 
-        // ── Full daily scan — runs at 6am ────────────
+        // ── Full daily scan ───────────────────────────
         public async Task RunFullDailyScanAsync()
         {
             _logger.LogInformation("🔍 Running full daily market scan...");
 
             try
             {
-                // ── Step 1: Filter symbol map to ONLY real equity stocks ──
-                // Remove indices (contain spaces), ETFs, bonds, F&O symbols
                 var equitySymbols = _symbolTokenMap.Keys
                     .Where(s =>
-                        !s.Contains(" ") &&        // No spaces = not an index
-                        !s.Contains("-") &&        // No hyphens
-                        !s.Contains("&") &&        // No special chars
-                        !s.EndsWith("BE") &&       // Not book entry
-                        !s.EndsWith("BL") &&       // Not block deal
-                        !s.EndsWith("GS") &&       // Not govt securities
-                        s.Length >= 2 &&
-                        s.Length <= 20 &&
-                        !s.StartsWith("Nifty") &&  // Not Nifty indices
-                        !s.StartsWith("NIFTY") &&  // Not Nifty indices
-                        !s.StartsWith("SENSEX") && // Not Sensex
-                        !s.StartsWith("India") &&  // Not India VIX etc
-                        char.IsLetter(s[0])        // Must start with letter
-                    )
+                        !s.Contains(" ") && !s.Contains("-") &&
+                        !s.Contains("&") && !s.EndsWith("BE") &&
+                        !s.EndsWith("BL") && !s.EndsWith("GS") &&
+                        s.Length >= 2 && s.Length <= 20 &&
+                        !s.StartsWith("Nifty") && !s.StartsWith("NIFTY") &&
+                        !s.StartsWith("SENSEX") && !s.StartsWith("India") &&
+                        char.IsLetter(s[0]))
                     .ToList();
 
                 _logger.LogInformation(
-                    "📊 Filtered to {count} equity symbols " +
-                    "from {total} total instruments",
-                    equitySymbols.Count,
-                    _symbolTokenMap.Count);
+                    "📊 Filtered to {count} equity symbols from {total} total instruments",
+                    equitySymbols.Count, _symbolTokenMap.Count);
 
-                // ── Step 2: Pre-screen with known quality stocks ──────────
-                // Use a curated list of quality NSE stocks for fast startup
-                // These are NSE 500 companies — all real, all on Screener.in
                 var tier1KnownSymbols = new List<string>
-        {
-            // Nifty 50
-            "RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK",
-            "HINDUNILVR", "BAJFINANCE", "SBIN", "BHARTIARTL",
-            "KOTAKBANK", "AXISBANK", "LT", "MARUTI", "SUNPHARMA",
-            "TITAN", "WIPRO", "DRREDDY", "TATASTEEL", "ONGC",
-            "NTPC", "POWERGRID", "TECHM", "DIVISLAB", "NESTLEIND",
-            "ULTRACEMCO", "ASIANPAINT", "COALINDIA", "BPCL",
-            "IOC", "GRASIM", "ADANIPORTS", "TATACONSUM", "BAJAJFINSV",
-            "HCLTECH", "INDUSINDBK", "JSWSTEEL", "LTIM", "BRITANNIA",
-            "CIPLA", "EICHERMOT",
-            // Nifty Next 50
-            "ZOMATO", "ADANIENT", "ADANIGREEN", "ADANIPOWER",
-            "APOLLOHOSP", "BANKBARODA", "BERGEPAINT", "BEL",
-            "BHEL", "BOSCHLTD", "CANBK", "CHOLAFIN", "COLPAL",
-            "DABUR", "DLF", "GAIL", "GODREJCP", "HAVELLS",
-            "HEROMOTOCO", "HINDALCO", "ICICIGI", "ICICIPRULI",
-            "IGL", "INDUSTOWER", "IRCTC", "LICI", "LODHA",
-            "LUPIN", "M&M", "MCDOWELL-N", "MUTHOOTFIN",
-            "NAUKRI", "OFSS", "PAGEIND", "PIDILITIND",
-            "POLYCAB", "RECLTD", "SHRIRAMFIN", "SIEMENS",
-            "SRF", "TATACOMM", "TORNTPHARM", "TRENT",
-            "TVSMOTOR", "UBL", "UNIONBANK", "VBL",
-            "VEDL", "ZYDUSLIFE",
-            // Additional quality midcaps
-            "ABCAPITAL", "ABFRL", "ACC", "AIAENG", "AJANTPHARM",
-            "ALKEM", "AMBUJACEM", "APLAPOLLO", "ASTRAL",
-            "ATUL", "AUBANK", "AUROPHARMA", "AVANTIFEED",
-            "BAJAJ-AUTO", "BALKRISIND", "BANDHANBNK",
-            "BATAINDIA", "BAYERCROP", "BIKAJI", "BLUEDART",
-            "BLUESTARCO", "BSOFT", "CAMS", "CANFINHOME",
-            "CASTROLIND", "CEATLTD", "CENTRALBK", "CLEAN",
-            "COFORGE", "CONCOR", "COROMANDEL", "CROMPTON",
-            "CUMMINSIND", "CYIENT", "DALBHARAT",
-            "DEEPAKNTR", "DELHIVERY", "DEVYANI", "DIXON",
-            "DMART", "DODLA", "DRHORTON", "ECLERX",
-            "EIDPARRY", "EIHOTEL", "ELGIEQUIP",
-            "EMAMILTD", "ENDURANCE", "ENGINERSIN",
-            "EQUITASBNK", "ESCORTS", "EXIDEIND",
-            "FEDERALBNK", "FINCABLES", "FINPIPE",
-            "FLUOROCHEM", "FORTIS", "GICRE", "GILLETTE",
-            "GLAXO", "GLENMARK", "GMRINFRA", "GNFC",
-            "GODFRYPHLP", "GODREJIND", "GODREJPROP",
-            "GRANULES", "GRINFRA", "GSPL", "GUJGASLTD",
-            "HAPPSTMNDS", "HBLPOWER", "HDFCAMC",
-            "HDFCLIFE", "HEXAWARE", "HINDCOPPER",
-            "HINDZINC", "HONAUT", "HUDCO",
-            "IBREALEST", "IDBI", "IDFCFIRSTB",
-            "IEX", "IFBIND", "IGL", "IIFL",
-            "INDIANB", "INDIGO", "INDOSTAR",
-            "INOXWIND", "INTELLECT", "IOB",
-            "IPCALAB", "IRB", "IREDA", "IRFC",
-            "ITC", "JBCHEPHARM", "JKCEMENT",
-            "JKLAKSHMI", "JKPAPER", "JKTYRE",
-            "JUBLFOOD", "JUBILANT", "JUSTDIAL",
-            "KAJARIACER", "KALPATPOWR", "KANSAINER",
-            "KARURVYSYA", "KEC", "KESORAMIND",
-            "KFINTECH", "KOTAKBANK", "KPIL",
-            "KRBL", "KSCL", "LALPATHLAB",
-            "LATENTVIEW", "LAURUSLABS", "LICHSGFIN",
-            "LINDEINDIA", "LTTS", "LUXIND",
-            "M&MFIN", "MAHABANK", "MAHINDCIE",
-            "MANAPPURAM", "MARICO", "MAXHEALTH",
-            "MFSL", "MIDHANI", "MINDTREE",
-            "MMTC", "MOTHERSON", "MPHASIS",
-            "MRF", "NATCOPHARM", "NATIONALUM",
-            "NAVINFLUOR", "NBCC", "NCC",
-            "NHPC", "NLCINDIA", "NMDC",
-            "NSLNISP", "NYKAA", "OIL",
-            "OLECTRA", "PAYTM", "PCBL",
-            "PERSISTENT", "PETRONET", "PFC",
-            "PFIZER", "PHOENIXLTD", "PIIND",
-            "PNBHOUSING", "POLICYBZR", "PRAJ",
-            "PRESTIGE", "PRINCEPIPE", "PRSMJOHNSN",
-            "PSUBANK", "PVRINOX", "RADICO",
-            "RAILTEL", "RAJESHEXPO", "RALLIS",
-            "RAMCOCEM", "RATNAMANI", "RAYMOND",
-            "RBLBANK", "REDINGTON", "RELAXO",
-            "RITES", "RVNL", "SAFARI",
-            "SAIL", "SANOFI", "SAPPHIRE",
-            "SAREGAMA", "SCHAEFFLER", "SEQUENT",
-            "SHREECEM", "SHREDIGCEM", "SHYAMMETL",
-            "SKFINDIA", "SOBHA", "SOLARA",
-            "SONACOMS", "SPANDANA", "SPARC",
-            "STAR", "STERLITE", "STOVEKRAFT",
-            "SUMICHEM", "SUNDARMFIN", "SUNDRMFAST",
-            "SUNTV", "SUPRAJIT", "SUPREMEIND",
-            "SUZLON", "SWANENERGY", "SYMPHONY",
-            "TANLA", "TATACHEM", "TATACOFFEE",
-            "TATAELXSI", "TATAINVEST", "TATAMTRDVR",
-            "TATAPOWER", "TATVA", "TCNSBRANDS",
-            "TEAMLEASE", "THERMAX", "THYROCARE",
-            "TIMKEN", "TITAGARH", "TORNTPOWER",
-            "TTML", "TUDIP", "TVSHLTD",
-            "UCOBANK", "UJJIVANSFB", "ULTRACEMCO",
-            "UNIPARTS", "UNITDSPR", "UPL",
-            "UTIAMC", "VAIBHAVGBL", "VAKRANGEE",
-            "VARROC", "VGUARD", "VINATIORGA",
-            "VOLTAS", "VSTIND", "WELCORP",
-            "WELSPUNIND", "WHIRLPOOL", "WOCKPHARMA",
-            "WONDERLA", "XCHANGING", "YESBANK",
-            "ZEEL", "ZEEMEDIA", "ZENTEC", "ZENSARTECH"
-        };
+                {
+                    // Nifty 50
+                    "RELIANCE","TCS","HDFCBANK","INFY","ICICIBANK",
+                    "HINDUNILVR","BAJFINANCE","SBIN","BHARTIARTL",
+                    "KOTAKBANK","AXISBANK","LT","MARUTI","SUNPHARMA",
+                    "TITAN","WIPRO","DRREDDY","TATASTEEL","ONGC",
+                    "NTPC","POWERGRID","TECHM","DIVISLAB","NESTLEIND",
+                    "ULTRACEMCO","ASIANPAINT","COALINDIA","BPCL",
+                    "IOC","GRASIM","ADANIPORTS","TATACONSUM","BAJAJFINSV",
+                    "HCLTECH","INDUSINDBK","JSWSTEEL","BRITANNIA",
+                    "CIPLA","EICHERMOT",
+                    // Nifty Next 50
+                    "ZOMATO","ADANIENT","ADANIGREEN","ADANIPOWER",
+                    "APOLLOHOSP","BANKBARODA","BERGEPAINT","BEL",
+                    "BHEL","BOSCHLTD","CANBK","CHOLAFIN","COLPAL",
+                    "DABUR","DLF","GAIL","GODREJCP","HAVELLS",
+                    "HEROMOTOCO","HINDALCO","ICICIGI","ICICIPRULI",
+                    "IGL","INDUSTOWER","IRCTC","LICI","LODHA",
+                    "LUPIN","M&M","MUTHOOTFIN",
+                    "NAUKRI","OFSS","PAGEIND","PIDILITIND",
+                    "POLYCAB","RECLTD","SHRIRAMFIN","SIEMENS",
+                    "SRF","TATACOMM","TORNTPHARM","TRENT",
+                    "TVSMOTOR","UBL","UNIONBANK","VBL",
+                    "VEDL","ZYDUSLIFE",
+                    // Quality midcaps
+                    "ABCAPITAL","ABFRL","ACC","AIAENG","AJANTPHARM",
+                    "ALKEM","AMBUJACEM","APLAPOLLO","ASTRAL",
+                    "ATUL","AUBANK","AUROPHARMA","AVANTIFEED",
+                    "BALKRISIND","BANDHANBNK","BATAINDIA","BAYERCROP",
+                    "BIKAJI","BLUEDART","BLUESTARCO","BSOFT","CAMS",
+                    "CANFINHOME","CASTROLIND","CEATLTD","CENTRALBK",
+                    "CLEAN","COFORGE","CONCOR","COROMANDEL","CROMPTON",
+                    "CUMMINSIND","CYIENT","DALBHARAT","DEEPAKNTR",
+                    "DELHIVERY","DEVYANI","DIXON","DMART","DODLA",
+                    "ECLERX","EIDPARRY","EIHOTEL","ELGIEQUIP",
+                    "EMAMILTD","ENDURANCE","ENGINERSIN","EQUITASBNK",
+                    "ESCORTS","EXIDEIND","FEDERALBNK","FINCABLES",
+                    "FINPIPE","FLUOROCHEM","FORTIS","GICRE","GILLETTE",
+                    "GLAXO","GLENMARK","GNFC","GODFRYPHLP","GODREJIND",
+                    "GODREJPROP","GRANULES","GRINFRA","GSPL","GUJGASLTD",
+                    "HAPPSTMNDS","HDFCAMC","HDFCLIFE","HINDCOPPER",
+                    "HINDZINC","HONAUT","HUDCO","IDBI","IDFCFIRSTB",
+                    "IEX","IFBIND","IIFL","INDIANB","INDIGO","INDOSTAR",
+                    "INOXWIND","INTELLECT","IOB","IPCALAB","IRB",
+                    "IREDA","IRFC","ITC","JBCHEPHARM","JKCEMENT",
+                    "JKLAKSHMI","JKPAPER","JKTYRE","JUBLFOOD","JUSTDIAL",
+                    "KAJARIACER","KANSAINER","KARURVYSYA","KEC",
+                    "KESORAMIND","KFINTECH","KPIL","KRBL","KSCL",
+                    "LALPATHLAB","LATENTVIEW","LAURUSLABS","LICHSGFIN",
+                    "LINDEINDIA","LTTS","LUXIND","M&MFIN","MAHABANK",
+                    "MANAPPURAM","MARICO","MAXHEALTH","MFSL","MIDHANI",
+                    "MMTC","MOTHERSON","MPHASIS","MRF","NATCOPHARM",
+                    "NATIONALUM","NAVINFLUOR","NBCC","NCC","NHPC",
+                    "NLCINDIA","NMDC","NSLNISP","NYKAA","OIL",
+                    "OLECTRA","PAYTM","PCBL","PERSISTENT","PETRONET",
+                    "PFC","PFIZER","PHOENIXLTD","PIIND","PNBHOUSING",
+                    "POLICYBZR","PRESTIGE","PRINCEPIPE","PRSMJOHNSN",
+                    "PSUBANK","PVRINOX","RADICO","RAILTEL","RAJESHEXPO",
+                    "RALLIS","RAMCOCEM","RATNAMANI","RAYMOND","RBLBANK",
+                    "REDINGTON","RELAXO","RITES","RVNL","SAFARI",
+                    "SAIL","SANOFI","SAPPHIRE","SAREGAMA","SCHAEFFLER",
+                    "SHREECEM","SHREDIGCEM","SHYAMMETL","SKFINDIA",
+                    "SOBHA","SOLARA","SONACOMS","SPANDANA","SPARC",
+                    "STAR","STOVEKRAFT","SUMICHEM","SUNDARMFIN",
+                    "SUNDRMFAST","SUNTV","SUPRAJIT","SUPREMEIND",
+                    "SUZLON","SYMPHONY","TANLA","TATACHEM","TATAELXSI",
+                    "TATAINVEST","TATAPOWER","TATVA","TEAMLEASE",
+                    "THERMAX","THYROCARE","TIMKEN","TITAGARH","TORNTPOWER",
+                    "TTML","TVSHLTD","UCOBANK","UJJIVANSFB","UNIPARTS",
+                    "UNITDSPR","UPL","UTIAMC","VAIBHAVGBL","VAKRANGEE",
+                    "VARROC","VGUARD","VINATIORGA","VOLTAS","VSTIND",
+                    "WELCORP","WHIRLPOOL","WOCKPHARMA","WONDERLA",
+                    "XCHANGING","YESBANK","ZEEL","ZEEMEDIA","ZENTEC","ZENSARTECH"
+                };
 
-                // Only keep symbols that exist in our token map
                 var validSymbols = tier1KnownSymbols
                     .Where(s => _symbolTokenMap.ContainsKey(s))
                     .Distinct()
                     .ToList();
 
-                _logger.LogInformation(
-                    "📋 Valid quality symbols: {count}", validSymbols.Count);
+                _logger.LogInformation("📋 Valid quality symbols: {count}", validSymbols.Count);
 
-                // ── Step 3: Fundamental screening ────────────────────────
-                _logger.LogInformation(
-                    "📋 Step 2: Running fundamental screen " +
-                    "on {count} stocks...", validSymbols.Count);
+                // ── Fundamental screening ─────────────────
+                _logger.LogInformation("📋 Step 2: Running fundamental screen on {count} stocks...",
+                    validSymbols.Count);
 
                 var qualitySymbols = new List<string>();
                 var fundScores = new Dictionary<string, double>();
@@ -232,31 +178,22 @@ namespace AlgoSenseNSE.API.Services
                 {
                     try
                     {
-                        var fund = await _fundamental
-                            .GetFundamentalsAsync(symbol);
+                        var fund = await _fundamental.GetFundamentalsAsync(symbol);
                         _fundResults[symbol] = fund;
-
-                        // Accept stocks even with partial data
-                        // Score > 0 means we got some data
                         qualitySymbols.Add(symbol);
                         fundScores[symbol] = fund.Score;
 
                         processed++;
                         if (processed % 10 == 0)
-                            _logger.LogInformation(
-                                "📊 Screened {done}/{total} stocks...",
+                            _logger.LogInformation("📊 Screened {done}/{total} stocks...",
                                 processed, validSymbols.Count);
 
-                        // Respectful delay — avoid 429 rate limit
-                        // 1.5 seconds between requests
                         await Task.Delay(800);
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogWarning(
-                            "⚠️ Fundamental fetch failed for {s}: {m}",
+                        _logger.LogWarning("⚠️ Fundamental fetch failed for {s}: {m}",
                             symbol, ex.Message);
-                        // Still add to quality list with default score
                         qualitySymbols.Add(symbol);
                         fundScores[symbol] = 50;
                     }
@@ -264,10 +201,8 @@ namespace AlgoSenseNSE.API.Services
 
                 _allQualitySymbols = qualitySymbols;
 
-                // ── Step 4: Assign tiers by fundamental score ─────────────
                 var sorted = qualitySymbols
-                    .OrderByDescending(s =>
-                        fundScores.GetValueOrDefault(s))
+                    .OrderByDescending(s => fundScores.GetValueOrDefault(s))
                     .ToList();
 
                 _tier1Symbols = sorted.Take(100).ToList();
@@ -275,17 +210,12 @@ namespace AlgoSenseNSE.API.Services
                 _lastFullScan = DateTime.Now;
 
                 _logger.LogInformation(
-                    "✅ Full scan complete: {total} quality stocks, " +
-                    "{t1} Tier1, {t2} Tier2",
-                    qualitySymbols.Count,
-                    _tier1Symbols.Count,
-                    _tier2Symbols.Count);
+                    "✅ Full scan complete: {total} quality stocks, {t1} Tier1, {t2} Tier2",
+                    qualitySymbols.Count, _tier1Symbols.Count, _tier2Symbols.Count);
 
-                // ── Step 5: Technical analysis on Tier 1 ─────────────────
-                await RefreshTechnicalAnalysisAsync(
-                    _tier1Symbols.Take(30).ToList());
+                // Technical analysis on top 30 by fundamental score
+                await RefreshTechnicalAnalysisAsync(_tier1Symbols.Take(30).ToList());
 
-                // ── Step 6: Generate recommendations ─────────────────────
                 await RefreshRecommendationsAsync();
             }
             catch (Exception ex)
@@ -294,60 +224,67 @@ namespace AlgoSenseNSE.API.Services
             }
         }
 
-        // ── Update live prices every 5 seconds ───────
-        public async Task UpdateLivePricesAsync(
-            List<string> symbols)
+        // ── Update live prices — SEQUENTIAL not parallel ──
+        // Parallel was causing 100 concurrent API calls → rate limit storm
+        public async Task UpdateLivePricesAsync(List<string> symbols)
         {
-            var tasks = symbols.Select(async symbol =>
+            // Only update in batches of 10 with throttling between each
+            foreach (var symbol in symbols)
             {
-                if (!_symbolTokenMap.TryGetValue(symbol, out var token))
-                    return;
-                var price = await _angel.GetLivePriceAsync(
-                    symbol, token);
+                if (!_symbolTokenMap.TryGetValue(symbol, out var token)) continue;
+
+                var price = await _angel.GetLivePriceAsync(symbol, token);
                 if (price != null)
                     _livePrices[symbol] = price;
-            });
 
-            await Task.WhenAll(tasks);
+                // ThrottleAsync inside GetLivePriceAsync handles pacing
+                // but add a tiny extra delay between symbols
+                await Task.Delay(50);
+            }
         }
 
         // ── Refresh technical analysis ────────────────
-        public async Task RefreshTechnicalAnalysisAsync(
-            List<string> symbols)
+        public async Task RefreshTechnicalAnalysisAsync(List<string> symbols)
         {
             foreach (var symbol in symbols)
             {
                 try
                 {
-                    if (!_symbolTokenMap.TryGetValue(
-                        symbol, out var token)) continue;
+                    if (!_symbolTokenMap.TryGetValue(symbol, out var token)) continue;
 
-                    var candles = await _angel.GetOhlcvAsync(
-                        symbol, token, "ONE_DAY", 200);
+                    var candles = await _angel.GetOhlcvAsync(symbol, token, "ONE_DAY", 200);
 
-                    if (candles.Count < 50) continue;
+                    if (candles.Count < 50)
+                    {
+                        _logger.LogDebug(
+                            "⚠️ Not enough candles for {sym}: {count} — skipping technical",
+                            symbol, candles.Count);
+
+                        // Still compute score using fundamentals only
+                        var fundScore = _fundResults.TryGetValue(symbol, out var f)
+                            ? f.Score : 50;
+                        var newsSentiment = _news.GetSymbolSentiment(symbol);
+                        var score = _scoring.Compute(symbol, 50, fundScore, newsSentiment);
+                        _scores[symbol] = score;
+                        continue;
+                    }
 
                     var tech = _technical.Compute(symbol, candles);
                     _techResults[symbol] = tech;
 
-                    // Update composite score
-                    var newsSentiment = _news
-                        .GetSymbolSentiment(symbol);
-                    var fundScore = _fundResults
-                        .TryGetValue(symbol, out var f) ? f.Score : 50;
+                    var newsSent = _news.GetSymbolSentiment(symbol);
+                    var fundScr = _fundResults.TryGetValue(symbol, out var fr) ? fr.Score : 50;
+                    var compositeScore = _scoring.Compute(symbol, tech.Score, fundScr, newsSent);
+                    _scores[symbol] = compositeScore;
 
-                    var score = _scoring.Compute(
-                        symbol, tech.Score, fundScore, newsSentiment);
-                    _scores[symbol] = score;
+                    // Small delay between OHLCV fetches
+                    await Task.Delay(600);
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(
-                        "⚠️ Technical analysis failed for {symbol}: {msg}",
+                    _logger.LogWarning("⚠️ Technical analysis failed for {sym}: {msg}",
                         symbol, ex.Message);
                 }
-
-                await Task.Delay(200); // Rate limit friendly
             }
         }
 
@@ -356,33 +293,34 @@ namespace AlgoSenseNSE.API.Services
         {
             try
             {
-                // To this — fall back to fundamental scores if no technical:
-                var topStocks = _fundResults
+                // Merge fundamental-only scores for stocks without technical
+                var allScored = _fundResults
                     .Where(f => f.Value.Score > 0)
-                    .Select(f => new KeyValuePair<string, CompositeScore>(
-                        f.Key,
-                        _scores.TryGetValue(f.Key, out var sc) ? sc :
-                        new CompositeScore
+                    .Select(f =>
+                    {
+                        if (_scores.TryGetValue(f.Key, out var sc)) return (f.Key, sc);
+                        // No technical yet — use fundamental score at 70% weight
+                        var newsSentiment = _news.GetSymbolSentiment(f.Key);
+                        var ns = 50 + (newsSentiment * 40);
+                        var fs = f.Value.Score * 0.7 + ns * 0.3;
+                        return (f.Key, new CompositeScore
                         {
                             Symbol = f.Key,
                             FundamentalScore = f.Value.Score,
                             TechnicalScore = 50,
-                            NewsScore = 50,
-                            FinalScore = f.Value.Score * 0.5 + 25
-                        }))
-                    .OrderByDescending(s => s.Value.FinalScore)
+                            NewsScore = Math.Max(0, Math.Min(100, ns)),
+                            FinalScore = Math.Round(fs, 1)
+                        });
+                    })
+                    .OrderByDescending(x => x.Item2.FinalScore)
                     .Take(10)
                     .ToList();
 
                 var recommendations = new List<Recommendation>();
                 int rank = 1;
 
-                foreach (var item in topStocks.Take(3))
+                foreach (var (symbol, score) in allScored.Take(3))
                 {
-                    var symbol = item.Key;
-                    var score = item.Value;
-
-                    // Get stock info
                     var price = _livePrices.GetValueOrDefault(symbol);
                     var stock = new StockInfo
                     {
@@ -396,14 +334,12 @@ namespace AlgoSenseNSE.API.Services
                     };
 
                     var tech = _techResults.GetValueOrDefault(symbol)
-                        ?? new TechnicalResult { Symbol = symbol };
+                        ?? new TechnicalResult { Symbol = symbol, Score = 50 };
                     var fund = _fundResults.GetValueOrDefault(symbol)
                         ?? new FundamentalResult { Symbol = symbol };
                     var relatedNews = _news.GetNewsForSymbol(symbol);
 
-                    // Get AI analysis
-                    var ai = await _ai.AnalyzeStockAsync(
-                        stock, tech, fund, relatedNews, score);
+                    var ai = await _ai.AnalyzeStockAsync(stock, tech, fund, relatedNews, score);
 
                     recommendations.Add(new Recommendation
                     {
@@ -419,52 +355,25 @@ namespace AlgoSenseNSE.API.Services
                 }
 
                 _recommendations = recommendations;
-                _logger.LogInformation(
-                        "✅ Recommendations updated: {symbols}",
-                        string.Join(", ",
-                            recommendations.Select(r => r.Stock.Symbol)));
+                _logger.LogInformation("✅ Recommendations updated: {symbols}",
+                    string.Join(", ", recommendations.Select(r => r.Stock.Symbol)));
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex,
-                    "❌ Failed to refresh recommendations");
+                _logger.LogError(ex, "❌ Failed to refresh recommendations");
             }
         }
 
-        // ── Get all NSE+BSE symbols ───────────────────
-        private async Task<List<string>> GetAllNseBseSymbolsAsync()
-        {
-            // Angel One provides a full instrument list
-            // We just return the keys from token map
-            // which is populated from Angel One master list
-            return _symbolTokenMap.Keys.ToList();
-        }
-
         // ── Public getters ────────────────────────────
-        public List<Recommendation> GetRecommendations()
-            => _recommendations;
-
-        public List<LivePrice> GetLivePrices()
-            => _livePrices.Values.ToList();
-
-        public LivePrice? GetLivePrice(string symbol)
-            => _livePrices.GetValueOrDefault(symbol);
-
-        public TechnicalResult? GetTechnical(string symbol)
-            => _techResults.GetValueOrDefault(symbol);
-
-        public FundamentalResult? GetFundamental(string symbol)
-            => _fundResults.GetValueOrDefault(symbol);
-
-        public CompositeScore? GetScore(string symbol)
-            => _scores.GetValueOrDefault(symbol);
-
+        public List<Recommendation> GetRecommendations() => _recommendations;
+        public List<LivePrice> GetLivePrices() => _livePrices.Values.ToList();
+        public LivePrice? GetLivePrice(string symbol) => _livePrices.GetValueOrDefault(symbol);
+        public TechnicalResult? GetTechnical(string symbol) => _techResults.GetValueOrDefault(symbol);
+        public FundamentalResult? GetFundamental(string symbol) => _fundResults.GetValueOrDefault(symbol);
+        public CompositeScore? GetScore(string symbol) => _scores.GetValueOrDefault(symbol);
         public List<string> GetTier1Symbols() => _tier1Symbols;
         public List<string> GetTier2Symbols() => _tier2Symbols;
-        public List<string> GetAllSymbols()
-            => _symbolTokenMap.Keys.ToList();
-
-        public Dictionary<string, CompositeScore> GetAllScores()
-            => _scores;
+        public List<string> GetAllSymbols() => _symbolTokenMap.Keys.ToList();
+        public Dictionary<string, CompositeScore> GetAllScores() => _scores;
     }
 }

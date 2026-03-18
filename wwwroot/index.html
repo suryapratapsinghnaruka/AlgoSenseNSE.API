@@ -89,7 +89,6 @@ html, body { background: var(--bg); color: var(--text); font-family: var(--sans)
 .sell { background: var(--red-dim); color: var(--red); border: 1px solid rgba(255,64,96,0.25); }
 .hold { background: rgba(245,200,66,0.12); color: var(--yellow); border: 1px solid rgba(245,200,66,0.25); }
 
-/* RING */
 svg.ring { display: block; }
 
 /* STOCKS TABLE */
@@ -267,22 +266,46 @@ function ringSVG(score, size=52) {
       font-size="12" font-weight="700" font-family="JetBrains Mono,monospace">${Math.round(score)}</text>
   </svg>`;
 }
-function sparkSVG(candles, w=120, h=36) {
-  if(!candles||candles.length<2)return'';
-  const closes=candles.slice(-20).map(c=>c.close||c.Close||0);
-  const mn=Math.min(...closes), mx=Math.max(...closes), range=mx-mn||1;
-  const pts=closes.map((v,i)=>`${(i/(closes.length-1))*w},${h-((v-mn)/range)*h}`).join(' ');
-  const up=closes[closes.length-1]>=closes[0];
-  return `<svg class="sparkline" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">
-    <polyline points="${pts}" fill="none" stroke="${up?'var(--green)':'var(--red)'}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-  </svg>`;
+
+// ── Update index display (shared helper) ─────────
+function updateIndexDisplay(nifty, sensex) {
+  if (nifty && nifty.ltp > 0) {
+    document.getElementById('d-nifty').textContent =
+      '₹' + nifty.ltp.toLocaleString('en-IN', {maximumFractionDigits: 0});
+    document.getElementById('d-nifty-c').textContent =
+      (nifty.changePercent >= 0 ? '▲ +' : '▼ ') +
+      Math.abs(nifty.changePercent).toFixed(2) + '%';
+    document.getElementById('d-nifty-c').style.color =
+      nifty.changePercent >= 0 ? 'var(--green)' : 'var(--red)';
+    document.getElementById('niftyVal').textContent =
+      '₹' + nifty.ltp.toLocaleString('en-IN', {maximumFractionDigits: 0});
+  }
+  if (sensex && sensex.ltp > 0) {
+    document.getElementById('d-sensex').textContent =
+      '₹' + sensex.ltp.toLocaleString('en-IN', {maximumFractionDigits: 0});
+    document.getElementById('d-sensex-c').textContent =
+      (sensex.changePercent >= 0 ? '▲ +' : '▼ ') +
+      Math.abs(sensex.changePercent).toFixed(2) + '%';
+    document.getElementById('d-sensex-c').style.color =
+      sensex.changePercent >= 0 ? 'var(--green)' : 'var(--red)';
+  }
+}
+
+// ── Fetch indices once on load (before SignalR push) ─
+async function fetchIndicesOnce() {
+  try {
+    const r = await fetch(`${API}/api/stocks/indices`);
+    if (!r.ok) return;
+    const d = await r.json();
+    updateIndexDisplay(d.nifty, d.sensex);
+  } catch(e) { console.error('indices:', e); }
 }
 
 // ── SignalR Connection ────────────────────────────
 async function connectSignalR() {
   connection = new signalR.HubConnectionBuilder()
     .withUrl(`${API}/hubs/market`)
-    .withAutomaticReconnect([0,2000,5000,10000,30000])
+    .withAutomaticReconnect([0, 2000, 5000, 10000, 30000])
     .configureLogging(signalR.LogLevel.Warning)
     .build();
 
@@ -294,8 +317,11 @@ async function connectSignalR() {
 
   connection.on('PricesUpdated', (prices) => {
     prices.forEach(p => {
-      const stock = allStocks.find(s=>s.symbol===p.symbol);
-      if(stock) { stock.price=p.ltp||p.LTP; stock.changePercent=p.changePercent||p.ChangePercent; }
+      const stock = allStocks.find(s => s.symbol === p.symbol);
+      if (stock) {
+        stock.price = p.ltp || p.LTP;
+        stock.changePercent = p.changePercent || p.ChangePercent;
+      }
     });
     updatePriceDisplays();
   });
@@ -308,7 +334,12 @@ async function connectSignalR() {
   connection.on('NewsUpdated', (news) => {
     allNews = news;
     rotateTicker();
-    if(document.getElementById('tab-news').style.display!=='none') renderNews();
+    if (document.getElementById('tab-news').style.display !== 'none') renderNews();
+  });
+
+  // ── Index data via SignalR push (every 60s from server) ──
+  connection.on('IndexUpdated', (data) => {
+    updateIndexDisplay(data.nifty, data.sensex);
   });
 
   connection.onreconnecting(() => {
@@ -366,14 +397,15 @@ async function fetchTiers() {
   try {
     const r = await fetch(`${API}/api/stocks/tiers`);
     const d = await r.json();
-    document.getElementById('d-tracked').textContent = d.totalTracked?.toLocaleString('en-IN') || '—';
+    document.getElementById('d-tracked').textContent =
+      d.totalTracked?.toLocaleString('en-IN') || '—';
   } catch(e) {}
 }
 
 // ── Render Top 3 ──────────────────────────────────
 function renderTop3() {
   const el = document.getElementById('top3Container');
-  if(!recommendations || recommendations.length === 0) {
+  if (!recommendations || recommendations.length === 0) {
     el.innerHTML = '<div class="loading"><div class="spinner"></div>Generating recommendations...</div>';
     return;
   }
@@ -387,12 +419,12 @@ function renderTop3() {
     const ai = rec.aiAnalysis;
     const score = rec.score || {};
     const tech = rec.technical || {};
-    const fund = rec.fundamental || {};
     const recWord = ai?.recommendation || 'HOLD';
     const target = ai?.target || tech.suggestedTarget || 0;
     const sl = ai?.stopLoss || tech.suggestedStopLoss || 0;
     const entry = ai?.entry || s.lastPrice || 0;
-    const rr = target>0&&sl>0&&entry>0 ? ((target-entry)/(entry-sl)).toFixed(1) : '—';
+    const rr = target>0 && sl>0 && entry>0
+      ? ((target-entry)/(entry-sl)).toFixed(1) : '—';
 
     return `
     <div class="pick card-glow" onclick="openAnalysis('${s.symbol}')">
@@ -407,9 +439,7 @@ function renderTop3() {
           <div class="pick-name">${s.name||''}</div>
           <div style="font-size:9px;color:var(--text3);margin-top:1px">${s.sector||''}</div>
         </div>
-        <div style="text-align:right">
-          ${ringSVG(score.finalScore||50, 52)}
-        </div>
+        <div style="text-align:right">${ringSVG(score.finalScore||50, 52)}</div>
       </div>
 
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
@@ -435,7 +465,9 @@ function renderTop3() {
         <span style="font-size:10px;color:var(--text3)">R:R</span>
         <span style="font-size:11px;font-weight:700;color:var(--green);font-family:var(--mono)">1:${rr}</span>
         <div style="margin-left:auto;display:flex;gap:10px">
-          ${[{l:'T',s:score.technicalScore||50,c:'var(--blue)'},{l:'F',s:score.fundamentalScore||50,c:'var(--purple)'},{l:'N',s:score.newsScore||50,c:'var(--yellow)'}].map(x=>`
+          ${[{l:'T',s:score.technicalScore||50,c:'var(--blue)'},
+             {l:'F',s:score.fundamentalScore||50,c:'var(--purple)'},
+             {l:'N',s:score.newsScore||50,c:'var(--yellow)'}].map(x=>`
           <div style="display:flex;align-items:center;gap:3px">
             <span style="font-size:9px;color:var(--text3)">${x.l}</span>
             <div style="width:28px;height:4px;border-radius:2px;background:rgba(255,255,255,0.05);overflow:hidden">
@@ -461,7 +493,7 @@ function renderTop3() {
 // ── Render All Stocks Table ───────────────────────
 function renderAllStocksTable() {
   const el = document.getElementById('allStocksTable');
-  if(!allStocks || allStocks.length === 0) return;
+  if (!allStocks || allStocks.length === 0) return;
 
   const rows = allStocks.slice(0,50).map((s, i) => {
     const rec = s.recommendation || 'HOLD';
@@ -489,7 +521,10 @@ function renderAllStocksTable() {
 // ── Render Screener ───────────────────────────────
 function renderScreener() {
   const el = document.getElementById('stockScreener');
-  if(!allStocks.length) { el.innerHTML = '<div class="loading"><div class="spinner"></div>Loading...</div>'; return; }
+  if (!allStocks.length) {
+    el.innerHTML = '<div class="loading"><div class="spinner"></div>Loading...</div>';
+    return;
+  }
 
   el.innerHTML = allStocks.slice(0,30).map(s => `
     <div class="card" style="padding:14px;margin-bottom:10px;cursor:pointer" onclick="openAnalysis('${s.symbol}')">
@@ -518,18 +553,20 @@ function renderScreener() {
 // ── Render News ───────────────────────────────────
 function renderNews() {
   const el = document.getElementById('newsList');
-  if(!allNews.length) { el.innerHTML = '<div class="loading"><div class="spinner"></div>Loading news...</div>'; return; }
+  if (!allNews.length) {
+    el.innerHTML = '<div class="loading"><div class="spinner"></div>Loading news...</div>';
+    return;
+  }
 
   el.innerHTML = allNews.slice(0,50).map(item => {
     const sent = item.sentimentScore || item.SentimentScore || 0;
-    const sentC = sentColor(sent);
     return `<div class="ni card">
       <div class="ni-hl">${item.headline || item.Headline || ''}</div>
       <div class="ni-meta">
         <span class="ni-src">${item.source || item.Source || ''} · ${timeAgo(item.publishedAt || item.PublishedAt)}</span>
         ${(item.relatedSymbols || item.RelatedSymbols || []).map(sym =>
           `<span class="ni-sym">${sym}</span>`).join('')}
-        <span class="ni-sent" style="color:${sentC}">${sentLabel(sent)} (${sent>=0?'+':''}${(sent*100).toFixed(0)}%)</span>
+        <span class="ni-sent" style="color:${sentColor(sent)}">${sentLabel(sent)} (${sent>=0?'+':''}${(sent*100).toFixed(0)}%)</span>
       </div>
     </div>`;
   }).join('');
@@ -550,7 +587,6 @@ async function openAnalysis(symbol) {
     const score = data.score || {};
     const news = data.news || [];
 
-    // Get AI analysis
     let ai = null;
     try {
       const air = await fetch(`${API}/api/stocks/${symbol}/analyze`, { method: 'POST' });
@@ -563,9 +599,9 @@ async function openAnalysis(symbol) {
     const target = ai?.target || tech.suggestedTarget || 0;
     const sl = ai?.stopLoss || tech.suggestedStopLoss || 0;
     const entry = ai?.entry || ltp || 0;
-    const upside = target>0&&entry>0 ? ((target-entry)/entry*100).toFixed(1) : '—';
-    const risk = sl>0&&entry>0 ? ((entry-sl)/entry*100).toFixed(1) : '—';
-    const rr = target>0&&sl>0&&entry>0 ? ((target-entry)/(entry-sl)).toFixed(1) : '—';
+    const upside = target>0 && entry>0 ? ((target-entry)/entry*100).toFixed(1) : '—';
+    const risk   = sl>0 && entry>0 ? ((entry-sl)/entry*100).toFixed(1) : '—';
+    const rr     = target>0 && sl>0 && entry>0 ? ((target-entry)/(entry-sl)).toFixed(1) : '—';
 
     el.innerHTML = `
     <div class="analysis-wrap">
@@ -584,8 +620,10 @@ async function openAnalysis(symbol) {
       <div id="chartDiv-${symbol}" class="chart-container card"></div>
 
       <div class="s4">
-        ${[{l:'Composite',s:score.finalScore||50,c:'var(--green)'},{l:'Technical',s:score.technicalScore||50,c:'var(--blue)'},
-           {l:'Fundamental',s:score.fundamentalScore||50,c:'var(--purple)'},{l:'News',s:score.newsScore||50,c:'var(--yellow)'}].map(x=>`
+        ${[{l:'Composite',s:score.finalScore||50,c:'var(--green)'},
+           {l:'Technical',s:score.technicalScore||50,c:'var(--blue)'},
+           {l:'Fundamental',s:score.fundamentalScore||50,c:'var(--purple)'},
+           {l:'News',s:score.newsScore||50,c:'var(--yellow)'}].map(x=>`
         <div class="sc card">
           ${ringSVG(x.s, 52)}
           <div><div class="sc-lbl">${x.l}</div><div class="sc-val" style="color:${x.c}">${x.s.toFixed(0)}</div><div style="font-size:10px;color:var(--text3)">/100</div></div>
@@ -662,7 +700,6 @@ async function openAnalysis(symbol) {
 
     </div>`;
 
-    // Render TradingView chart
     setTimeout(() => renderChart(symbol), 100);
 
   } catch(e) {
@@ -674,12 +711,11 @@ async function openAnalysis(symbol) {
 // ── TradingView Chart ─────────────────────────────
 async function renderChart(symbol) {
   const container = document.getElementById(`chartDiv-${symbol}`);
-  if(!container || !LightweightCharts) return;
+  if (!container || !LightweightCharts) return;
 
   try {
     const chart = LightweightCharts.createChart(container, {
-      width: container.clientWidth,
-      height: 300,
+      width: container.clientWidth, height: 300,
       layout: { background: { color: '#0b1120' }, textColor: '#94a3b8' },
       grid: { vertLines: { color: 'rgba(255,255,255,0.05)' }, horzLines: { color: 'rgba(255,255,255,0.05)' } },
       crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
@@ -693,18 +729,15 @@ async function renderChart(symbol) {
       wickUpColor: '#00f5a0', wickDownColor: '#ff4060'
     });
 
-    // Fetch real OHLCV from backend
-    const stock = allStocks.find(s=>s.symbol===symbol);
-    const token = stock?.token || '';
     const r = await fetch(`${API}/api/stocks/${symbol}/ohlcv`);
-    if(r.ok) {
+    if (r.ok) {
       const candles = await r.json();
-      if(candles && candles.length > 0) {
+      if (candles && candles.length > 0) {
         const data = candles.map(c => ({
           time: Math.floor(new Date(c.timestamp||c.Timestamp).getTime()/1000),
           open: c.open||c.Open, high: c.high||c.High,
           low: c.low||c.Low, close: c.close||c.Close
-        })).filter(c=>c.open>0).sort((a,b)=>a.time-b.time);
+        })).filter(c => c.open > 0).sort((a,b) => a.time - b.time);
         candleSeries.setData(data);
         chart.timeScale().fitContent();
       }
@@ -714,30 +747,30 @@ async function renderChart(symbol) {
       chart.applyOptions({ width: container.clientWidth });
     });
   } catch(e) {
-    container.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text3);font-size:12px">Chart unavailable during non-market hours</div>';
+    container.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text3);font-size:12px">Chart unavailable</div>';
   }
 }
 
-// ── Update Displays ───────────────────────────────
+// ── Update price displays ─────────────────────────
 function updatePriceDisplays() {
-  // Update top 3 if visible
-  if(document.getElementById('tab-dashboard').style.display !== 'none') {
-    // Just update price elements without full re-render
-  }
+  // Price updates handled by renderTop3 re-render on RecommendationsUpdated
+  // Individual price cards update via allStocks array mutation above
 }
 
 function updateMoodCard() {
-  if(!allStocks.length) return;
-  const avg = allStocks.reduce((a,s)=>a+(s.compositeScore||50),0)/allStocks.length;
-  document.getElementById('d-mood').textContent = avg>60?'Bullish 🟢':avg>45?'Neutral 🟡':'Bearish 🔴';
+  if (!allStocks.length) return;
+  const avg = allStocks.reduce((a,s) => a+(s.compositeScore||50), 0) / allStocks.length;
+  document.getElementById('d-mood').textContent =
+    avg > 60 ? 'Bullish 🟢' : avg > 45 ? 'Neutral 🟡' : 'Bearish 🔴';
   document.getElementById('d-mood').style.fontSize = '14px';
   document.getElementById('d-mood-s').textContent = `Score: ${avg.toFixed(0)}/100`;
-  document.getElementById('d-mood-s').style.color = avg>60?'var(--green)':avg>45?'var(--yellow)':'var(--red)';
+  document.getElementById('d-mood-s').style.color =
+    avg > 60 ? 'var(--green)' : avg > 45 ? 'var(--yellow)' : 'var(--red)';
 }
 
 // ── News Ticker ───────────────────────────────────
 function rotateTicker() {
-  if(!allNews.length) return;
+  if (!allNews.length) return;
   const item = allNews[tickerIdx % allNews.length];
   const sent = item.sentimentScore || item.SentimentScore || 0;
   const el = document.getElementById('tickerText');
@@ -756,59 +789,40 @@ function rotateTicker() {
 function showTab(tab) {
   ['dashboard','stocks','news','analysis'].forEach((t,i) => {
     const el = document.getElementById(`tab-${t}`);
-    if(el) el.style.display = t===tab ? 'block' : 'none';
+    if (el) el.style.display = t===tab ? 'block' : 'none';
     document.querySelectorAll('.tab')[i]?.classList.toggle('active', t===tab);
   });
-  if(tab==='stocks') renderScreener();
-  if(tab==='news') renderNews();
+  if (tab==='stocks') renderScreener();
+  if (tab==='news') renderNews();
 }
-
-// ── Add OHLCV endpoint to controller ─────────────
-// Also add GET api/stocks/{symbol}/ohlcv endpoint
 
 // ── Init ──────────────────────────────────────────
 async function init() {
-  // Connect SignalR
+  // Start SignalR (index updates come via IndexUpdated event)
   connectSignalR();
 
-  // Fetch initial data
-  await Promise.all([fetchRecommendations(), fetchStocks(), fetchNews(), fetchTiers()]);
+  // Fetch index once immediately so UI shows data before first SignalR push
+  fetchIndicesOnce();
 
-  // Ticker rotation
+  // Fetch all other initial data in parallel
+  await Promise.all([
+    fetchRecommendations(),
+    fetchStocks(),
+    fetchNews(),
+    fetchTiers()
+  ]);
+
+  // Rotate ticker every 4 seconds
   setInterval(rotateTicker, 4000);
 
-  // Refresh data periodically
+  // Refresh stocks + recs every minute via REST (SignalR also updates these)
   setInterval(async () => {
     await fetchRecommendations();
     await fetchStocks();
-  }, 60000); // every minute
+  }, 60000);
 
-    // Refresh data periodically
-setInterval(async () => {
-  await fetchIndices();
-}, 10000); // every minute
-
-  setInterval(fetchNews, 30000); // every 30 seconds
-
-    async function fetchIndices() {
-  try {
-    const r = await fetch(`${API}/api/stocks/indices`);
-    if(!r.ok) return;
-    const d = await r.json();
-
-    if(d.nifty) {
-      document.getElementById('d-nifty').textContent = '₹' + d.nifty.ltp.toLocaleString('en-IN', {maximumFractionDigits:0});
-      document.getElementById('d-nifty-c').textContent = (d.nifty.changePercent >= 0 ? '▲ +' : '▼ ') + d.nifty.changePercent.toFixed(2) + '%';
-      document.getElementById('d-nifty-c').style.color = d.nifty.changePercent >= 0 ? 'var(--green)' : 'var(--red)';
-      document.getElementById('niftyVal').textContent = '₹' + d.nifty.ltp.toLocaleString('en-IN', {maximumFractionDigits:0});
-    }
-    if(d.sensex) {
-      document.getElementById('d-sensex').textContent = '₹' + d.sensex.ltp.toLocaleString('en-IN', {maximumFractionDigits:0});
-      document.getElementById('d-sensex-c').textContent = (d.sensex.changePercent >= 0 ? '▲ +' : '▼ ') + d.sensex.changePercent.toFixed(2) + '%';
-      document.getElementById('d-sensex-c').style.color = d.sensex.changePercent >= 0 ? 'var(--green)' : 'var(--red)';
-    }
-  } catch(e) { console.error('indices:', e); }
-}
+  // Refresh news every 30 seconds
+  setInterval(fetchNews, 30000);
 }
 
 init();
