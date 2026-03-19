@@ -7,8 +7,8 @@ Console.OutputEncoding = System.Text.Encoding.UTF8;
 var builder = WebApplication.CreateBuilder(args);
 
 // ── Port ──────────────────────────────────────────
-var port = Environment.GetEnvironmentVariable("PORT") ?? "5150";
-builder.WebHost.UseUrls($"http://0.0.0.0:{port}");
+//var port = Environment.GetEnvironmentVariable("PORT") ?? "5150";
+//builder.WebHost.UseUrls($"http://0.0.0.0:{port}");
 
 // ── Directories ───────────────────────────────────
 foreach (var dir in new[] { "/app/data", "/app/logs", "logs", "data" })
