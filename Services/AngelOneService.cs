@@ -4,7 +4,6 @@ using Newtonsoft.Json.Linq;
 using OtpNet;
 using System.Globalization;
 using System.Net.Http.Headers;
-using System.Security.Cryptography;
 using System.Text;
 
 namespace AlgoSenseNSE.API.Services
@@ -14,6 +13,7 @@ namespace AlgoSenseNSE.API.Services
         private readonly IConfiguration _config;
         private readonly ILogger<AngelOneService> _logger;
         private readonly HttpClient _http;
+        private readonly IHttpClientFactory _httpClientFactory;
 
         private string _jwtToken = "";
         private string _apiKey = "";
@@ -23,11 +23,24 @@ namespace AlgoSenseNSE.API.Services
 
         private const string BaseUrl = "https://apiconnect.angelone.in";
 
-        // ── Rate Limiter — Angel One free = ~3 req/sec ──
+        // Rate limiter — Angel One free = ~3 req/sec
         private readonly SemaphoreSlim _rateLimiter = new(1, 1);
         private DateTime _lastApiCall = DateTime.MinValue;
-        private const int MinMsBetweenCalls = 400; // 2.5 req/sec max
+        private const int MinMsBetweenCalls = 400;
 
+        public AngelOneService(
+            IConfiguration config,
+            ILogger<AngelOneService> logger,
+            IHttpClientFactory httpClientFactory)
+        {
+            _config = config;
+            _logger = logger;
+            _httpClientFactory = httpClientFactory;
+            _http = httpClientFactory.CreateClient("AngelOne");
+            _apiKey = _config["AngelOne:ApiKey"] ?? "";
+        }
+
+        // ── Rate throttle ─────────────────────────────
         private async Task ThrottleAsync()
         {
             await _rateLimiter.WaitAsync();
@@ -38,23 +51,10 @@ namespace AlgoSenseNSE.API.Services
                     await Task.Delay((int)(MinMsBetweenCalls - elapsed));
                 _lastApiCall = DateTime.UtcNow;
             }
-            finally
-            {
-                _rateLimiter.Release();
-            }
+            finally { _rateLimiter.Release(); }
         }
 
-        public AngelOneService(IConfiguration config,
-            ILogger<AngelOneService> logger,
-            IHttpClientFactory httpClientFactory)
-        {
-            _config = config;
-            _logger = logger;
-            _http = httpClientFactory.CreateClient("AngelOne");
-            _apiKey = _config["AngelOne:ApiKey"] ?? "";
-        }
-
-        // ── Generate TOTP ────────────────────────────
+        // ── Generate TOTP ─────────────────────────────
         private string GenerateTotp()
         {
             var secret = _config["AngelOne:TotpSecret"]!;
@@ -63,7 +63,7 @@ namespace AlgoSenseNSE.API.Services
             return totp.ComputeTotp();
         }
 
-        // ── Login ────────────────────────────────────
+        // ── Login ─────────────────────────────────────
         public async Task<bool> LoginAsync()
         {
             try
@@ -76,8 +76,7 @@ namespace AlgoSenseNSE.API.Services
                     totp = totp
                 };
 
-                var request = new HttpRequestMessage(
-                    HttpMethod.Post,
+                var request = new HttpRequestMessage(HttpMethod.Post,
                     $"{BaseUrl}/rest/auth/angelbroking/user/v1/loginByPassword");
 
                 request.Headers.Add("X-API-KEY", _apiKey);
@@ -88,7 +87,6 @@ namespace AlgoSenseNSE.API.Services
                 request.Headers.Add("X-UserType", "USER");
                 request.Headers.Add("X-SourceID", "WEB");
                 request.Headers.Add("Accept", "application/json");
-
                 request.Content = new StringContent(
                     JsonConvert.SerializeObject(payload),
                     Encoding.UTF8, "application/json");
@@ -96,12 +94,12 @@ namespace AlgoSenseNSE.API.Services
                 var response = await _http.SendAsync(request);
                 var rawResponse = await response.Content.ReadAsStringAsync();
 
-                _logger.LogInformation("Angel One login response [{code}]: {body}",
+                _logger.LogInformation(
+                    "Angel One login response [{code}]: {body}",
                     (int)response.StatusCode,
                     rawResponse.Length > 200 ? rawResponse[..200] : rawResponse);
 
                 var result = JObject.Parse(rawResponse);
-
                 if (result["status"]?.Value<bool>() == true)
                 {
                     _jwtToken = result["data"]?["jwtToken"]?.Value<string>() ?? "";
@@ -123,18 +121,19 @@ namespace AlgoSenseNSE.API.Services
             }
         }
 
-        // ── Ensure token valid ───────────────────────
+        // ── Ensure token valid ────────────────────────
         private async Task EnsureLoggedInAsync()
         {
             if (string.IsNullOrEmpty(_jwtToken) || DateTime.Now >= _tokenExpiry)
                 await LoginAsync();
         }
 
-        // ── Build authenticated request ──────────────
+        // ── Authenticated request builder ─────────────
         private HttpRequestMessage CreateAuthRequest(HttpMethod method, string url)
         {
             var req = new HttpRequestMessage(method, url);
-            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _jwtToken);
+            req.Headers.Authorization =
+                new AuthenticationHeaderValue("Bearer", _jwtToken);
             req.Headers.Add("X-PrivateKey", _apiKey);
             req.Headers.Add("X-UserType", "USER");
             req.Headers.Add("X-SourceID", "WEB");
@@ -145,7 +144,7 @@ namespace AlgoSenseNSE.API.Services
             return req;
         }
 
-        // ── Get Live Quote ────────────────────────────
+        // ── Get Live Price ────────────────────────────
         public async Task<LivePrice?> GetLivePriceAsync(string symbol, string token)
         {
             try
@@ -191,7 +190,7 @@ namespace AlgoSenseNSE.API.Services
             }
             catch (Exception ex)
             {
-                _logger.LogDebug("Live price failed for {sym}: {msg}", symbol, ex.Message);
+                _logger.LogDebug("Live price failed {sym}: {msg}", symbol, ex.Message);
                 return null;
             }
         }
@@ -199,7 +198,8 @@ namespace AlgoSenseNSE.API.Services
         // ── Get OHLCV Candles ─────────────────────────
         public async Task<List<OhlcvCandle>> GetOhlcvAsync(
             string symbol, string token,
-            string interval = "ONE_DAY", int days = 60,
+            string interval = "ONE_DAY",
+            int days = 60,
             string exchange = "NSE")
         {
             try
@@ -228,8 +228,8 @@ namespace AlgoSenseNSE.API.Services
                 var response = await _http.SendAsync(req);
                 var raw = await response.Content.ReadAsStringAsync();
 
-                // Check for rate limit text in body (sometimes 200 with error body)
-                if (raw.Contains("exceeding access rate") || raw.Contains("Invalid API Key"))
+                if (raw.Contains("exceeding access rate") ||
+                    raw.Contains("Invalid API Key"))
                 {
                     _logger.LogWarning("⚠️ OHLCV rate limited for {sym}", symbol);
                     await Task.Delay(2000);
@@ -238,14 +238,12 @@ namespace AlgoSenseNSE.API.Services
 
                 if (!response.IsSuccessStatusCode)
                 {
-                    // Try BSE fallback once
                     if (exchange == "NSE")
                     {
                         await Task.Delay(400);
-                        return await GetOhlcvAsync(symbol, token, interval, days, "BSE");
+                        return await GetOhlcvAsync(
+                            symbol, token, interval, days, "BSE");
                     }
-                    _logger.LogWarning("⚠️ OHLCV {code} for {sym} ({exch})",
-                        (int)response.StatusCode, symbol, exchange);
                     return new List<OhlcvCandle>();
                 }
 
@@ -253,21 +251,20 @@ namespace AlgoSenseNSE.API.Services
                 if (obj?["status"]?.Value<bool>() != true)
                 {
                     var msg = obj?["message"]?.Value<string>() ?? "";
-                    // If NSE token invalid, try BSE
                     if (exchange == "NSE" &&
                         (msg.Contains("Invalid") || msg.Contains("token")))
                     {
                         await Task.Delay(400);
-                        return await GetOhlcvAsync(symbol, token, interval, days, "BSE");
+                        return await GetOhlcvAsync(
+                            symbol, token, interval, days, "BSE");
                     }
-                    _logger.LogWarning("⚠️ OHLCV bad status for {sym}: {msg}", symbol, msg);
                     return new List<OhlcvCandle>();
                 }
 
                 var data = obj["data"] as JArray;
-                if (data == null || data.Count == 0) return new List<OhlcvCandle>();
+                if (data == null || data.Count == 0)
+                    return new List<OhlcvCandle>();
 
-                // Angel One returns: [timestamp, open, high, low, close, volume]
                 var bars = new List<OhlcvCandle>();
                 foreach (var item in data)
                 {
@@ -285,18 +282,20 @@ namespace AlgoSenseNSE.API.Services
                             Volume = arr[5].Value<long>()
                         });
                     }
-                    catch { /* skip malformed bar */ }
+                    catch { }
                 }
 
                 if (bars.Count > 0)
-                    _logger.LogInformation("✅ OHLCV {sym}: {count} bars ({exch})",
+                    _logger.LogInformation(
+                        "✅ OHLCV {sym}: {count} bars ({exch})",
                         symbol, bars.Count, exchange);
 
                 return bars;
             }
             catch (Exception ex)
             {
-                _logger.LogWarning("⚠️ OHLCV exception {sym}: {msg}", symbol, ex.Message);
+                _logger.LogWarning("⚠️ OHLCV exception {sym}: {msg}",
+                    symbol, ex.Message);
                 return new List<OhlcvCandle>();
             }
         }
@@ -327,39 +326,46 @@ namespace AlgoSenseNSE.API.Services
                 var response = await _http.SendAsync(req);
                 var raw = await response.Content.ReadAsStringAsync();
 
-                // Guard against rate limit or plain-text error responses
                 if (!raw.TrimStart().StartsWith("{"))
                 {
-                    _logger.LogWarning("⚠️ Index non-JSON response [{exch}]: {raw}",
+                    _logger.LogWarning(
+                        "⚠️ Index non-JSON [{exch}]: {raw}",
                         exchange, raw.Length > 80 ? raw[..80] : raw);
                     return null;
                 }
 
-                _logger.LogInformation("Index API raw [{exch}/{tok}]: {raw}",
-                    exchange, token, raw.Length > 200 ? raw[..200] : raw);
+                _logger.LogInformation(
+                    "Index API raw [{exch}/{tok}]: {raw}",
+                    exchange, token,
+                    raw.Length > 200 ? raw[..200] : raw);
 
                 var obj = JObject.Parse(raw);
-
-                // Angel One returns "status" not "success"
                 if (obj["status"]?.Value<bool>() != true) return null;
 
                 var fetched = obj["data"]?["fetched"]?.FirstOrDefault();
                 if (fetched == null) return null;
 
                 double ltp = 0, chg = 0;
-
-                foreach (var f in new[] { "ltp", "LTP", "close", "lastTradedPrice" })
+                foreach (var f in new[]
+                    { "ltp", "LTP", "close", "lastTradedPrice" })
+                {
                     if (fetched[f] != null &&
                         double.TryParse(fetched[f]!.ToString(),
-                            NumberStyles.Any, CultureInfo.InvariantCulture, out double v)
+                            NumberStyles.Any,
+                            CultureInfo.InvariantCulture, out double v)
                         && v > 0)
                     { ltp = v; break; }
+                }
 
-                foreach (var f in new[] { "percentChange", "pChange", "netChangePercentage" })
+                foreach (var f in new[]
+                    { "percentChange", "pChange", "netChangePercentage" })
+                {
                     if (fetched[f] != null &&
                         double.TryParse(fetched[f]!.ToString(),
-                            NumberStyles.Any, CultureInfo.InvariantCulture, out double v))
+                            NumberStyles.Any,
+                            CultureInfo.InvariantCulture, out double v))
                     { chg = v; break; }
+                }
 
                 return ltp > 0 ? new { ltp, changePercent = chg } : null;
             }
@@ -370,63 +376,168 @@ namespace AlgoSenseNSE.API.Services
             }
         }
 
-        // ── Get Symbol Token Map ──────────────────────
+        // ── Symbol Token Map — STREAMING (no OOM) ────
+        // Uses streaming JSON reader to avoid loading
+        // the entire 40MB file into memory at once.
+        // Falls back to hardcoded map if OOM or error.
         public async Task<Dictionary<string, string>> GetSymbolTokenMapAsync(
             List<string> symbols)
         {
-            var map = new Dictionary<string, string>();
+            var map = new Dictionary<string, string>(
+                StringComparer.OrdinalIgnoreCase);
             try
             {
-                await EnsureLoggedInAsync();
+                var url = "https://margincalculator.angelbroking.com" +
+                          "/OpenAPI_File/files/OpenAPIScripMaster.json";
 
-                var req = new HttpRequestMessage(HttpMethod.Get,
-                    "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json");
-                req.Headers.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
+                // Stream response — never loads full 40MB into RAM
+                using var response = await _http.GetAsync(url,
+                    HttpCompletionOption.ResponseHeadersRead);
 
-                var response = await _http.SendAsync(req);
-                var raw = await response.Content.ReadAsStringAsync();
-
-                _logger.LogInformation("Instruments from {url}: length={len}, starts={start}",
-                    "margincalculator", raw.Length,
-                    raw.Length > 80 ? raw[..80] : raw);
-
-                if (!raw.TrimStart().StartsWith("["))
+                if (!response.IsSuccessStatusCode)
                 {
-                    _logger.LogError("❌ Could not get instrument list.");
+                    _logger.LogWarning(
+                        "⚠️ Instrument master returned {code}",
+                        (int)response.StatusCode);
                     return GetFallbackSymbolMap();
                 }
 
-                var instruments = JArray.Parse(raw);
-                foreach (var inst in instruments)
-                {
-                    var sym = inst["symbol"]?.Value<string>() ?? "";
-                    var token = inst["token"]?.Value<string>() ?? "";
-                    var exch = inst["exch_seg"]?.Value<string>() ?? "";
-                    var instrType = inst["instrumenttype"]?.Value<string>() ?? "";
+                using var stream = await response.Content.ReadAsStreamAsync();
+                using var reader = new StreamReader(stream);
+                using var jsonReader = new Newtonsoft.Json.JsonTextReader(reader);
 
-                    if ((exch == "NSE" || exch == "BSE")
-                        && !string.IsNullOrEmpty(sym)
-                        && !string.IsNullOrEmpty(token)
-                        && (instrType == "EQ" || instrType == "" || instrType == "AMXIDX")
-                        && !sym.Contains("-")
-                        && !map.ContainsKey(sym))
-                    {
-                        map[sym] = token;
-                    }
+                var serializer = new Newtonsoft.Json.JsonSerializer();
+                var instruments = serializer
+                    .Deserialize<List<InstrumentToken>>(jsonReader);
+
+                if (instruments == null || instruments.Count == 0)
+                {
+                    _logger.LogWarning("⚠️ No instruments returned");
+                    return GetFallbackSymbolMap();
                 }
 
-                _logger.LogInformation("✅ Symbol token map: {count} symbols loaded", map.Count);
+                _logger.LogInformation(
+                    "Instruments loaded: {count}", instruments.Count);
+
+                foreach (var inst in instruments)
+                {
+                    if (string.IsNullOrEmpty(inst.token) ||
+                        string.IsNullOrEmpty(inst.symbol) ||
+                        string.IsNullOrEmpty(inst.exch_seg))
+                        continue;
+
+                    // Only NSE equity stocks
+                    if (inst.exch_seg != "NSE") continue;
+
+                    // Accept symbols ending in -EQ or no suffix
+                    var sym = inst.symbol.Trim().ToUpper();
+
+                    if (sym.EndsWith("-EQ"))
+                        sym = sym[..^3]; // Remove -EQ suffix
+
+                    // Skip futures/options/indices (contain digits or special chars)
+                    if (sym.Contains("-") || sym.Contains("&")) continue;
+                    if (string.IsNullOrEmpty(sym)) continue;
+
+                    // TryAdd — silently skips duplicates
+                    map.TryAdd(sym, inst.token);
+                }
+
+                _logger.LogInformation(
+                    "✅ Symbol token map: {count} symbols loaded", map.Count);
+
+                return map.Count > 0 ? map : GetFallbackSymbolMap();
+            }
+            catch (OutOfMemoryException)
+            {
+                _logger.LogWarning(
+                    "⚠️ OutOfMemory reading instruments — using fallback map");
+                return GetFallbackSymbolMap();
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "❌ Error building symbol token map");
                 return GetFallbackSymbolMap();
             }
+        }
+
+        // ── Fallback map — hardcoded correct tokens ───
+        // Used when instrument master can't be loaded
+        // (low memory server like Railway free tier)
+        private Dictionary<string, string> GetFallbackSymbolMap()
+        {
+            _logger.LogWarning(
+                "⚠️ Using fallback symbol map (50 intraday stocks)");
+
+            var tokens = new[]
+            {
+                ("SBIN",       "3045"),
+                ("BANKBARODA", "4668"),
+                ("CANBK",      "10794"),
+                ("UNIONBANK",  "2752"),
+                ("MAHABANK",   "4032"),
+                ("CENTRALBK",  "20374"),
+                ("IOB",        "4574"),
+                ("INDIANB",    "10999"),
+                ("PNB",        "14428"),
+                ("COALINDIA",  "1660"),
+                ("ONGC",       "2475"),
+                ("BPCL",       "526"),
+                ("IOC",        "1624"),
+                ("GAIL",       "910"),
+                ("NMDC",       "15332"),
+                ("NATIONALUM", "15355"),
+                ("HINDALCO",   "1363"),
+                ("TATASTEEL",  "3432"),
+                ("WIPRO",      "3787"),
+                ("HCLTECH",    "7229"),
+                ("TECHM",      "13538"),
+                ("INFY",       "1594"),
+                ("TCS",        "11536"),
+                ("SUNPHARMA",  "3351"),
+                ("CIPLA",      "694"),
+                ("DRREDDY",    "881"),
+                ("LUPIN",      "10440"),
+                ("NTPC",       "11630"),
+                ("POWERGRID",  "14977"),
+                ("NHPC",       "13675"),
+                ("IRFC",       "49071"),
+                ("RVNL",       "20320"),
+                ("RECLTD",     "13611"),
+                ("PFC",        "14299"),
+                ("IREDA",      "54214"),
+                ("IRCTC",      "16752"),
+                ("IEX",        "17163"),
+                ("SUZLON",     "12018"),
+                ("ADANIPORTS", "15083"),
+                ("ADANIPOWER", "533096"),
+                ("TATAPOWER",  "3426"),
+                ("BEL",        "383"),
+                ("ITC",        "1660"),
+                ("EMAMILTD",   "317"),
+                ("MARICO",     "4067"),
+                ("MUTHOOTFIN", "18143"),
+                ("MANAPPURAM", "19061"),
+                ("LICHSGFIN",  "1023"),
+                ("LICI",       "543526"),
+                ("INDUSTOWER", "14181"),
+                ("PETRONET",   "11351"),
+                ("COLPAL",     "1623"),
+                ("HINDUNILVR", "1394"),
+            };
+
+            var map = new Dictionary<string, string>(
+                StringComparer.OrdinalIgnoreCase);
+
+            foreach (var (sym, tok) in tokens)
+                map.TryAdd(sym, tok);
+
             return map;
         }
 
         // ── Get Stock Info ────────────────────────────
-        public async Task<StockInfo?> GetStockInfoAsync(string symbol, string token)
+        public async Task<StockInfo?> GetStockInfoAsync(
+            string symbol, string token)
         {
             var price = await GetLivePriceAsync(symbol, token);
             if (price == null) return null;
@@ -446,31 +557,16 @@ namespace AlgoSenseNSE.API.Services
 
         public string GetFeedToken() => _feedToken;
         public string GetJwtToken() => _jwtToken;
+    }
 
-        // ── Fallback symbol map ───────────────────────
-        private Dictionary<string, string> GetFallbackSymbolMap()
-        {
-            _logger.LogWarning("⚠️ Using fallback symbol map (top 50 NSE stocks)");
-            return new Dictionary<string, string>
-            {
-                {"RELIANCE","2885"}, {"TCS","11536"}, {"HDFCBANK","1333"},
-                {"INFY","1594"}, {"ICICIBANK","4963"}, {"HINDUNILVR","1394"},
-                {"BAJFINANCE","317"}, {"SBIN","3045"}, {"BHARTIARTL","10604"},
-                {"KOTAKBANK","1922"}, {"AXISBANK","5900"}, {"LT","11483"},
-                {"MARUTI","10999"}, {"SUNPHARMA","3351"}, {"TITAN","3506"},
-                {"WIPRO","3787"}, {"DRREDDY","881"}, {"TATASTEEL","3499"},
-                {"ONGC","2475"}, {"NTPC","11630"}, {"POWERGRID","14977"},
-                {"TECHM","13538"}, {"NESTLEIND","17963"}, {"ULTRACEMCO","11532"},
-                {"ASIANPAINT","236"}, {"COALINDIA","20374"}, {"BPCL","526"},
-                {"IOC","1624"}, {"ADANIPORTS","15083"}, {"BAJAJFINSV","16675"},
-                {"HCLTECH","7229"}, {"INDUSINDBK","5258"}, {"JSWSTEEL","11723"},
-                {"CIPLA","694"}, {"EICHERMOT","910"}, {"HEROMOTOCO","1348"},
-                {"APOLLOHOSP","157"}, {"BRITANNIA","547"}, {"PIDILITIND","2664"},
-                {"SIEMENS","3150"}, {"HAVELLS","1215"}, {"MUTHOOTFIN","17261"},
-                {"BANKBARODA","4668"}, {"ITC","1660"}, {"NMDC","15332"},
-                {"LICI","543526"}, {"GAIL","532155"}, {"ONGC","2475"},
-                {"SBIN","3045"}, {"TCS","11536"}
-            };
-        }
+    // ── Instrument token model for streaming parse ──
+    public class InstrumentToken
+    {
+        public string token { get; set; } = "";
+        public string symbol { get; set; } = "";
+        public string name { get; set; } = "";
+        public string exch_seg { get; set; } = "";
+        public string expiry { get; set; } = "";    
+        public string instrumenttype { get; set; } = "";
     }
 }
