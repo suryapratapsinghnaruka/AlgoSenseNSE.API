@@ -18,15 +18,14 @@ namespace AlgoSenseNSE.API.Controllers
         [HttpGet]
         public IActionResult GetAll()
         {
-            return Ok(_news.GetCachedNews().Take(100));
+            return Ok(_news.GetCachedNews());
         }
 
         // GET api/news/{symbol}
         [HttpGet("{symbol}")]
         public IActionResult GetForSymbol(string symbol)
         {
-            return Ok(_news.GetNewsForSymbol(
-                symbol.ToUpper()));
+            return Ok(_news.GetNewsForSymbol(symbol.ToUpper()));
         }
 
         // POST api/news/refresh
@@ -37,7 +36,8 @@ namespace AlgoSenseNSE.API.Controllers
             return Ok(new
             {
                 count = news.Count,
-                items = news.Take(50)
+                refreshedAt = DateTime.Now,
+                news = news.Take(20)
             });
         }
     }

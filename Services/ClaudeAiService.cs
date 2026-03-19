@@ -22,7 +22,6 @@ namespace AlgoSenseNSE.API.Services
             _http = httpClientFactory.CreateClient("Claude");
         }
 
-        // ── Main analysis method ─────────────────────
         public async Task<AiAnalysis> AnalyzeStockAsync(
             StockInfo stock,
             TechnicalResult tech,
@@ -30,87 +29,101 @@ namespace AlgoSenseNSE.API.Services
             List<NewsItem> news,
             CompositeScore score)
         {
-            // Return cache if analyzed in last 30 mins
+            // Cache 10 minutes for intraday
             if (_cache.TryGetValue(stock.Symbol, out var cached) &&
-                (DateTime.Now - cached.GeneratedAt).TotalMinutes < 30)
+                (DateTime.Now - cached.GeneratedAt).TotalMinutes < 10)
                 return cached;
 
             try
             {
-                var newsHeadlines = news.Any()
-                    ? string.Join("\n", news.Take(5)
-                        .Select(n =>
-                            $"- {n.Headline} " +
-                            $"[{n.SentimentLabel}] ({n.Source})"))
-                    : "No specific news today";
+                var capital = _config.GetValue<double>("Trading:Capital", 1500);
+                var ist = GetIST();
+                var minsLeft = (int)(new DateTime(ist.Year, ist.Month, ist.Day,
+                    15, 30, 0) - ist).TotalMinutes;
+                var timeCtx = minsLeft > 0
+                    ? $"Market closes in {minsLeft} min"
+                    : "Market closed — pre-market analysis";
 
-                var prompt = $@"You are an expert Indian stock market analyst 
-specializing in NSE/BSE stocks. Analyze this stock comprehensively and give 
-a precise trading recommendation.
+                // Shares based on capital
+                int shares = stock.LastPrice > 0
+                    ? (int)(capital * 0.60 / stock.LastPrice) : 0;
 
-═══════════════════════════════════════
+                // Bull/bear signal count
+                int bullCount = tech.Signals.Count(s => s.IsBullish == true);
+                int bearCount = tech.Signals.Count(s => s.IsBullish == false);
+                string consensus = bullCount > bearCount
+                    ? $"BULLISH ({bullCount} bull vs {bearCount} bear)"
+                    : bearCount > bullCount
+                    ? $"BEARISH ({bearCount} bear vs {bullCount} bull)"
+                    : "MIXED — signals equal";
+
+                // Brokerage impact
+                double brokerage = 40.0;
+                double minProfitNeeded = brokerage / Math.Max(shares, 1);
+
+                var newsText = news.Any()
+                    ? string.Join("\n", news.Take(3)
+                        .Select(n => $"  - {n.Headline} [{n.SentimentLabel}]"))
+                    : "  No specific news today";
+
+                var prompt = $@"You are an expert NSE intraday trader.
+Help a beginner make ₹100-₹200 profit today with ₹{capital:N0} capital.
+
 STOCK: {stock.Symbol} | CMP: ₹{stock.LastPrice:F2}
-Day Change: {stock.ChangePercent:F2}% | 
-Volume: {stock.Volume:N0}
-═══════════════════════════════════════
+Time: {ist:HH:mm} IST | {timeCtx}
 
-TECHNICAL ANALYSIS (Score: {tech.Score:F0}/100):
-- RSI (14):        {tech.RSI:F1}
-- MACD Histogram:  {tech.MACDHistogram:F3}
-- Bollinger %B:    {tech.BollingerPctB:F2}
-- EMA 20:          ₹{tech.EMA20:F2}
-- EMA 50:          ₹{tech.EMA50:F2}  
-- EMA 200:         ₹{tech.EMA200:F2}
-- ADX:             {tech.ADX:F1}
-- +DI / -DI:       {tech.PlusDI:F1} / {tech.MinusDI:F1}
-- VWAP:            ₹{tech.VWAP:F2}
-- ATR (14):        ₹{tech.ATR:F2}
-- Supertrend:      {(tech.SupertrendBullish ? "BUY ✓" : "SELL ✗")}
-- Suggested Target:   ₹{tech.SuggestedTarget:F2}
-- Suggested Stop Loss:₹{tech.SuggestedStopLoss:F2}
+━━━ 5-MIN CANDLE INDICATORS ━━━
+Score:        {score.FinalScore:F0}/100
+VWAP:         ₹{tech.VWAP:F2} → Price is {(stock.LastPrice > tech.VWAP ? "ABOVE ✅" : "BELOW ❌")}
+EMA 9:        ₹{tech.EMA20:F2}
+EMA 21:       ₹{tech.EMA50:F2} → {(tech.EMA20 > tech.EMA50 ? "Bullish ✅" : "Bearish ❌")}
+RSI (14):     {tech.RSI:F1} → {(tech.RSI > 60 ? "Strong ✅" : tech.RSI < 40 ? "Weak ❌" : "Neutral")}
+MACD Hist:    {tech.MACDHistogram:F3} {(tech.MACDHistogram > 0 ? "✅" : "❌")}
+Supertrend:   {(tech.SupertrendBullish ? "BUY ✅" : "SELL ❌")}
+ADX:          {tech.ADX:F0} {(tech.ADX > 25 ? "(Strong trend)" : "(Weak trend ⚠️)")}
+ATR:          ₹{tech.ATR:F2}
 
-FUNDAMENTAL ANALYSIS (Score: {fund.Score:F0}/100):
-- P/E Ratio:       {fund.PE:F1}
-- P/B Ratio:       {fund.PB:F2}
-- ROE:             {fund.ROE:F1}%
-- ROCE:            {fund.ROCE:F1}%
-- Debt/Equity:     {fund.DebtToEquity:F2}
-- Revenue Growth:  {fund.RevenueGrowthYoY:F1}% YoY
-- EPS Growth:      {fund.EPSGrowth:F1}%
-- Promoter Hold:   {fund.PromoterHolding:F1}%
-- FII Holding:     {fund.FIIHolding:F1}%
-- Market Cap:      {fund.MarketCap}
+CONSENSUS: {consensus}
 
-RECENT NEWS (Sentiment score: {score.NewsScore:F0}/100):
-{newsHeadlines}
+━━━ TRADE SETUP ━━━
+Suggested Entry: ₹{stock.LastPrice:F2}
+Suggested Target: ₹{tech.SuggestedTarget:F2}
+Suggested SL:    ₹{tech.SuggestedStopLoss:F2}
 
-COMPOSITE SCORE: {score.FinalScore:F1}/100
-Technical: {score.TechnicalScore:F0} | 
-Fundamental: {score.FundamentalScore:F0} | 
-News: {score.NewsScore:F0}
+━━━ CAPITAL MATH (₹{capital:N0}) ━━━
+Shares affordable: {shares}
+Min profit needed to beat brokerage: ₹{minProfitNeeded:F2}/share
+Brokerage cost: ₹{brokerage:F0} (buy+sell Angel One)
 
-Based on ALL the above data, provide your analysis.
-Respond ONLY in this exact JSON format, no markdown, 
-no extra text, no explanation outside JSON:
+━━━ FUNDAMENTALS ━━━
+PE: {fund.PE:F1} | ROE: {fund.ROE:F1}% | Promoter: {fund.PromoterHolding:F1}%
 
+━━━ NEWS ━━━
+{newsText}
+
+STRICT RULES YOU MUST FOLLOW:
+1. If ADX < 20 → AVOID (no trend, choppy)
+2. If MACD and Supertrend conflict → AVOID
+3. If RSI > 75 → AVOID (overbought)
+4. If consensus is MIXED → AVOID
+5. Stop loss must be within 0.75% of entry
+6. Target must give at least ₹{brokerage * 2:F0} profit after brokerage
+7. Target must be achievable within 1-2 hours
+8. If less than 60 min to market close → AVOID
+
+Respond ONLY in this exact JSON. No markdown, no extra text:
 {{
-  ""recommendation"": ""BUY"" or ""HOLD"" or ""SELL"",
-  ""confidence"": <integer 55-95>,
-  ""entry"": <number: suggested entry price>,
-  ""target"": <number: 4-8 week price target>,
-  ""stopLoss"": <number: strict stop loss>,
+  ""recommendation"": ""BUY"" or ""AVOID"",
+  ""confidence"": <55-92>,
+  ""entry"": <price>,
+  ""target"": <realistic intraday target>,
+  ""stopLoss"": <strict — max 0.75% below entry>,
   ""riskReward"": ""1:X.X"",
-  ""timeHorizon"": ""X-X weeks"",
-  ""summary"": ""2-3 sentences: key catalyst + risk + overall view"",
-  ""keyDrivers"": [
-    ""driver 1"",
-    ""driver 2"",
-    ""driver 3""
-  ],
-  ""risks"": [
-    ""risk 1"",
-    ""risk 2""
-  ],
+  ""expectedProfit"": ""₹XX on {shares} shares after brokerage"",
+  ""timeHorizon"": ""Exit by HH:MM"",
+  ""summary"": ""One clear sentence why to trade or avoid"",
+  ""keyDrivers"": [""reason 1"", ""reason 2"", ""reason 3""],
+  ""risks"": [""risk 1"", ""risk 2""],
   ""technicalView"": ""Bullish"" or ""Bearish"" or ""Neutral"",
   ""fundamentalView"": ""Strong"" or ""Average"" or ""Weak"",
   ""newsView"": ""Positive"" or ""Negative"" or ""Neutral""
@@ -119,7 +132,7 @@ no extra text, no explanation outside JSON:
                 var payload = new
                 {
                     model = "claude-sonnet-4-20250514",
-                    max_tokens = 1000,
+                    max_tokens = 800,
                     messages = new[]
                     {
                         new { role = "user", content = prompt }
@@ -129,8 +142,7 @@ no extra text, no explanation outside JSON:
                 var req = new HttpRequestMessage(
                     HttpMethod.Post,
                     "https://api.anthropic.com/v1/messages");
-                req.Headers.Add("x-api-key",
-                    _config["Claude:ApiKey"]);
+                req.Headers.Add("x-api-key", _config["Claude:ApiKey"]);
                 req.Headers.Add("anthropic-version", "2023-06-01");
                 req.Content = new StringContent(
                     JsonConvert.SerializeObject(payload),
@@ -139,11 +151,9 @@ no extra text, no explanation outside JSON:
                 var response = await _http.SendAsync(req);
                 var json = await response.Content.ReadAsStringAsync();
                 var result = JObject.Parse(json);
-
                 var text = result["content"]?[0]?["text"]
                     ?.Value<string>() ?? "";
 
-                // Clean and parse JSON response
                 var clean = text
                     .Replace("```json", "")
                     .Replace("```", "")
@@ -151,7 +161,7 @@ no extra text, no explanation outside JSON:
 
                 var analysis = JsonConvert
                     .DeserializeObject<AiAnalysis>(clean)
-                    ?? FallbackAnalysis(stock, tech, score);
+                    ?? FallbackAnalysis(stock, tech, score, shares);
 
                 analysis.Symbol = stock.Symbol;
                 analysis.GeneratedAt = DateTime.Now;
@@ -159,68 +169,88 @@ no extra text, no explanation outside JSON:
                 _cache[stock.Symbol] = analysis;
 
                 _logger.LogInformation(
-                    "✅ AI analysis for {symbol}: {rec} " +
-                    "(confidence: {conf}%)",
+                    "✅ AI {sym}: {rec} conf:{conf}% — {summary}",
                     stock.Symbol,
                     analysis.Recommendation,
-                    analysis.Confidence);
+                    analysis.Confidence,
+                    analysis.Summary?.Length > 60
+                        ? analysis.Summary[..60] + "..."
+                        : analysis.Summary);
 
                 return analysis;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex,
-                    "❌ Claude AI analysis failed for {symbol}",
-                    stock.Symbol);
-                return FallbackAnalysis(stock, tech, score);
+                _logger.LogError(ex, "❌ Claude AI failed for {sym}", stock.Symbol);
+                int shares = stock.LastPrice > 0
+                    ? (int)(_config.GetValue<double>("Trading:Capital", 1500)
+                        * 0.60 / stock.LastPrice) : 0;
+                return FallbackAnalysis(stock, tech, score, shares);
             }
         }
 
-        // ── Fallback if Claude API fails ─────────────
         private AiAnalysis FallbackAnalysis(
             StockInfo stock,
             TechnicalResult tech,
-            CompositeScore score)
+            CompositeScore score,
+            int shares)
         {
-            var rec = score.FinalScore >= 65 ? "BUY"
-                    : score.FinalScore >= 45 ? "HOLD"
-                    : "SELL";
+            // Conservative fallback — only BUY if all 3 main signals align
+            bool strongBuy = tech.SupertrendBullish
+                && stock.LastPrice > tech.VWAP
+                && tech.RSI > 55 && tech.RSI < 75
+                && tech.ADX > 22
+                && tech.Score >= 65;
+
+            string rec = strongBuy ? "BUY" : "AVOID";
+
+            double brokerage = 40.0;
+            double grossProfit = shares * (tech.SuggestedTarget - stock.LastPrice);
+            double netProfit = grossProfit - brokerage;
 
             return new AiAnalysis
             {
                 Symbol = stock.Symbol,
                 Recommendation = rec,
-                Confidence = (int)(score.FinalScore * 0.8 + 15),
+                Confidence = strongBuy ? 68 : 55,
                 Entry = stock.LastPrice,
                 Target = tech.SuggestedTarget,
                 StopLoss = tech.SuggestedStopLoss,
-                RiskReward = $"1:{((tech.SuggestedTarget - stock.LastPrice) / (stock.LastPrice - tech.SuggestedStopLoss)):F1}",
-                TimeHorizon = "4-6 weeks",
-                Summary = $"{stock.Symbol} has a composite score of " +
-                          $"{score.FinalScore:F0}/100. Technical score " +
-                          $"{score.TechnicalScore:F0}, Fundamental " +
-                          $"{score.FundamentalScore:F0}, News sentiment " +
-                          $"{score.NewsScore:F0}.",
+                RiskReward = tech.SuggestedStopLoss > 0 &&
+                    (stock.LastPrice - tech.SuggestedStopLoss) > 0
+                    ? $"1:{((tech.SuggestedTarget - stock.LastPrice) / (stock.LastPrice - tech.SuggestedStopLoss)):F1}"
+                    : "N/A",
+                ExpectedProfit = $"₹{netProfit:F0} on {shares} shares (after ₹{brokerage:F0} brokerage)",
+                TimeHorizon = "Exit by 14:00",
+                Summary = rec == "BUY"
+                    ? $"{stock.Symbol}: VWAP+Supertrend+RSI all bullish — momentum trade"
+                    : $"{stock.Symbol}: Mixed signals — skip today",
                 KeyDrivers = tech.Signals
                     .Where(s => s.IsBullish == true)
-                    .Take(3)
-                    .Select(s => s.Signal)
-                    .ToList(),
+                    .Take(3).Select(s => s.Signal).ToList(),
                 Risks = tech.Signals
                     .Where(s => s.IsBullish == false)
-                    .Take(2)
-                    .Select(s => s.Signal)
-                    .ToList(),
-                TechnicalView = tech.Score > 60 ? "Bullish"
-                    : tech.Score > 40 ? "Neutral" : "Bearish",
+                    .Take(2).Select(s => s.Signal).ToList(),
+                TechnicalView = tech.Score > 65 ? "Bullish"
+                                : tech.Score > 45 ? "Neutral" : "Bearish",
                 FundamentalView = "Average",
                 NewsView = score.NewsScore > 60 ? "Positive"
-                    : score.NewsScore > 40 ? "Neutral" : "Negative",
+                                : score.NewsScore > 40 ? "Neutral" : "Negative",
                 GeneratedAt = DateTime.Now
             };
         }
 
-        public void ClearCache(string symbol)
-            => _cache.Remove(symbol);
+        public void ClearCache(string symbol) => _cache.Remove(symbol);
+        public void ClearAllCache() => _cache.Clear();
+
+        private DateTime GetIST()
+        {
+            try
+            {
+                return TimeZoneInfo.ConvertTime(DateTime.UtcNow,
+                TimeZoneInfo.FindSystemTimeZoneById("India Standard Time"));
+            }
+            catch { return DateTime.UtcNow.AddHours(5).AddMinutes(30); }
+        }
     }
 }

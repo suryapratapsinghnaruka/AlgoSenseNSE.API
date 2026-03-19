@@ -122,6 +122,7 @@
         public double Target { get; set; }
         public double StopLoss { get; set; }
         public string RiskReward { get; set; } = "";
+        public string ExpectedProfit { get; set; } = "";  // ← ADD THIS LINE
         public string TimeHorizon { get; set; } = "";
         public string Summary { get; set; } = "";
         public List<string> KeyDrivers { get; set; } = new();

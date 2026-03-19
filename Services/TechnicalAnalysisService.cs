@@ -13,91 +13,199 @@ namespace AlgoSenseNSE.API.Services
             _logger = logger;
         }
 
-        // ── Convert our candles to Skender quotes ───
         private List<Quote> ToQuotes(List<OhlcvCandle> candles)
         {
-            return candles.Select(c => new Quote
-            {
-                Date = c.Timestamp,
-                Open = (decimal)c.Open,
-                High = (decimal)c.High,
-                Low = (decimal)c.Low,
-                Close = (decimal)c.Close,
-                Volume = c.Volume
-            }).ToList();
+            return candles
+                .OrderBy(c => c.Timestamp)
+                .Select(c => new Quote
+                {
+                    Date = c.Timestamp,
+                    Open = (decimal)c.Open,
+                    High = (decimal)c.High,
+                    Low = (decimal)c.Low,
+                    Close = (decimal)c.Close,
+                    Volume = c.Volume
+                }).ToList();
         }
 
-        // ── Main compute method ─────────────────────
+        // ── Main compute — all 10 indicators ─────────
         public TechnicalResult Compute(
             string symbol, List<OhlcvCandle> candles)
         {
             var result = new TechnicalResult { Symbol = symbol };
 
-            if (candles.Count < 50)
+            if (candles.Count < 30)
             {
                 _logger.LogWarning(
-                    "⚠️ Not enough candles for {symbol}: {count}",
+                    "⚠️ Not enough candles for {sym}: {cnt}",
                     symbol, candles.Count);
                 result.Score = 50;
                 return result;
             }
 
             var quotes = ToQuotes(candles);
-            double score = 50;
+            var lastClose = candles.Last().Close;
+            var lastVol = candles.Last().Volume;
+            var avgVol = candles.TakeLast(20).Average(c => (double)c.Volume);
 
-            // ── RSI ─────────────────────────────────
-            var rsiResults = quotes.GetRsi(14).ToList();
-            var lastRsi = rsiResults.LastOrDefault(r => r.Rsi != null);
-            if (lastRsi?.Rsi != null)
+            double score = 50;
+            int bullSignals = 0;
+            int bearSignals = 0;
+
+            // ━━━ 1. VWAP ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            // Most important intraday indicator
+            // Price above VWAP = institutions bullish
+            var vwapResults = quotes.GetVwap().ToList();
+            var lastVwap = vwapResults.LastOrDefault(v => v.Vwap != null);
+            if (lastVwap != null)
             {
-                result.RSI = (double)lastRsi.Rsi;
-                if (result.RSI < 30)
+                result.VWAP = (double)(lastVwap.Vwap ?? 0);
+                double vwapDiff = result.VWAP > 0
+                    ? ((lastClose - result.VWAP) / result.VWAP) * 100 : 0;
+
+                if (lastClose > result.VWAP)
                 {
-                    score += 15;
+                    score += 20; bullSignals++;
                     result.Signals.Add(new TechnicalSignal
                     {
-                        Indicator = "RSI",
-                        Value = result.RSI.ToString("F1"),
-                        Signal = "Oversold — Strong BUY signal",
-                        IsBullish = true
-                    });
-                }
-                else if (result.RSI > 70)
-                {
-                    score -= 15;
-                    result.Signals.Add(new TechnicalSignal
-                    {
-                        Indicator = "RSI",
-                        Value = result.RSI.ToString("F1"),
-                        Signal = "Overbought — SELL signal",
-                        IsBullish = false
-                    });
-                }
-                else if (result.RSI > 50)
-                {
-                    score += 5;
-                    result.Signals.Add(new TechnicalSignal
-                    {
-                        Indicator = "RSI",
-                        Value = result.RSI.ToString("F1"),
-                        Signal = "Bullish zone",
+                        Indicator = "VWAP",
+                        Value = $"₹{result.VWAP:F2} (+{vwapDiff:F2}%)",
+                        Signal = "Price above VWAP — Bullish bias",
                         IsBullish = true
                     });
                 }
                 else
                 {
-                    score -= 5;
+                    score -= 20; bearSignals++;
                     result.Signals.Add(new TechnicalSignal
                     {
-                        Indicator = "RSI",
-                        Value = result.RSI.ToString("F1"),
-                        Signal = "Bearish zone",
+                        Indicator = "VWAP",
+                        Value = $"₹{result.VWAP:F2} ({vwapDiff:F2}%)",
+                        Signal = "Price below VWAP — Bearish bias",
                         IsBullish = false
                     });
                 }
             }
 
-            // ── MACD ────────────────────────────────
+            // ━━━ 2. EMA 9 / 21 Crossover ━━━━━━━━━━━━━━
+            // Standard intraday EMA combo
+            var ema9 = quotes.GetEma(9).ToList();
+            var ema21 = quotes.GetEma(21).ToList();
+            result.EMA20 = (double)(ema9.LastOrDefault(e => e.Ema != null)?.Ema ?? 0);
+            result.EMA50 = (double)(ema21.LastOrDefault(e => e.Ema != null)?.Ema ?? 0);
+
+            if (result.EMA20 > result.EMA50 && lastClose > result.EMA20)
+            {
+                score += 15; bullSignals++;
+                result.Signals.Add(new TechnicalSignal
+                {
+                    Indicator = "EMA 9/21",
+                    Value = $"9:{result.EMA20:F1} 21:{result.EMA50:F1}",
+                    Signal = "EMA9 > EMA21 — Bullish crossover",
+                    IsBullish = true
+                });
+            }
+            else if (result.EMA20 < result.EMA50 && lastClose < result.EMA20)
+            {
+                score -= 15; bearSignals++;
+                result.Signals.Add(new TechnicalSignal
+                {
+                    Indicator = "EMA 9/21",
+                    Value = $"9:{result.EMA20:F1} 21:{result.EMA50:F1}",
+                    Signal = "EMA9 < EMA21 — Bearish crossover",
+                    IsBullish = false
+                });
+            }
+            else
+            {
+                result.Signals.Add(new TechnicalSignal
+                {
+                    Indicator = "EMA 9/21",
+                    Value = $"9:{result.EMA20:F1} 21:{result.EMA50:F1}",
+                    Signal = "Mixed EMA — wait for crossover",
+                    IsBullish = null
+                });
+            }
+
+            // ━━━ 3. EMA 50 (Intraday trend) ━━━━━━━━━━━
+            var ema50 = quotes.GetEma(50).ToList();
+            result.EMA200 = (double)(ema50.LastOrDefault(e => e.Ema != null)?.Ema ?? 0);
+            if (lastClose > result.EMA200)
+            {
+                score += 8;
+                result.Signals.Add(new TechnicalSignal
+                {
+                    Indicator = "EMA 50",
+                    Value = $"₹{result.EMA200:F1}",
+                    Signal = "Price above EMA50 — Uptrend confirmed",
+                    IsBullish = true
+                });
+            }
+            else
+            {
+                score -= 8;
+                result.Signals.Add(new TechnicalSignal
+                {
+                    Indicator = "EMA 50",
+                    Value = $"₹{result.EMA200:F1}",
+                    Signal = "Price below EMA50 — Downtrend",
+                    IsBullish = false
+                });
+            }
+
+            // ━━━ 4. RSI (14) ━━━━━━━━━━━━━━━━━━━━━━━━━
+            var rsiResults = quotes.GetRsi(14).ToList();
+            var lastRsi = rsiResults.LastOrDefault(r => r.Rsi != null);
+            if (lastRsi?.Rsi != null)
+            {
+                result.RSI = (double)lastRsi.Rsi;
+
+                if (result.RSI >= 55 && result.RSI <= 72)
+                {
+                    score += 15; bullSignals++;
+                    result.Signals.Add(new TechnicalSignal
+                    {
+                        Indicator = "RSI",
+                        Value = result.RSI.ToString("F1"),
+                        Signal = "RSI in bullish zone (55-72) — momentum buy",
+                        IsBullish = true
+                    });
+                }
+                else if (result.RSI > 72)
+                {
+                    score -= 12; bearSignals++;
+                    result.Signals.Add(new TechnicalSignal
+                    {
+                        Indicator = "RSI",
+                        Value = result.RSI.ToString("F1"),
+                        Signal = "RSI overbought (>72) — avoid buying",
+                        IsBullish = false
+                    });
+                }
+                else if (result.RSI >= 35 && result.RSI < 55)
+                {
+                    result.Signals.Add(new TechnicalSignal
+                    {
+                        Indicator = "RSI",
+                        Value = result.RSI.ToString("F1"),
+                        Signal = "RSI neutral — no strong signal",
+                        IsBullish = null
+                    });
+                }
+                else
+                {
+                    score -= 10; bearSignals++;
+                    result.Signals.Add(new TechnicalSignal
+                    {
+                        Indicator = "RSI",
+                        Value = result.RSI.ToString("F1"),
+                        Signal = "RSI oversold/weak (<35) — bearish",
+                        IsBullish = false
+                    });
+                }
+            }
+
+            // ━━━ 5. MACD (12,26,9) ━━━━━━━━━━━━━━━━━━━
             var macdResults = quotes.GetMacd(12, 26, 9).ToList();
             var lastMacd = macdResults.LastOrDefault(
                 m => m.Macd != null && m.Signal != null);
@@ -107,36 +215,85 @@ namespace AlgoSenseNSE.API.Services
                 result.MACDSignal = (double)(lastMacd.Signal ?? 0);
                 result.MACDHistogram = (double)(lastMacd.Histogram ?? 0);
 
-                if (result.MACDHistogram > 0)
+                // Check if momentum is building (histogram increasing)
+                var prevMacd = macdResults
+                    .Where(m => m.Date < lastMacd.Date && m.Histogram != null)
+                    .LastOrDefault();
+                bool histRising = prevMacd != null &&
+                    lastMacd.Histogram > prevMacd.Histogram;
+
+                if (result.MACDHistogram > 0 && histRising)
                 {
-                    score += 12;
+                    score += 15; bullSignals++;
                     result.Signals.Add(new TechnicalSignal
                     {
                         Indicator = "MACD",
-                        Value = result.MACDHistogram.ToString("F3"),
-                        Signal = "Bullish crossover",
+                        Value = $"Hist: {result.MACDHistogram:F3} ↑",
+                        Signal = "MACD bullish + momentum building",
+                        IsBullish = true
+                    });
+                }
+                else if (result.MACDHistogram > 0)
+                {
+                    score += 8;
+                    result.Signals.Add(new TechnicalSignal
+                    {
+                        Indicator = "MACD",
+                        Value = $"Hist: {result.MACDHistogram:F3}",
+                        Signal = "MACD bullish crossover",
                         IsBullish = true
                     });
                 }
                 else
                 {
-                    score -= 8;
+                    score -= (histRising ? 5 : 12);
+                    bearSignals++;
                     result.Signals.Add(new TechnicalSignal
                     {
                         Indicator = "MACD",
-                        Value = result.MACDHistogram.ToString("F3"),
-                        Signal = "Bearish crossover",
+                        Value = $"Hist: {result.MACDHistogram:F3}",
+                        Signal = "MACD bearish — avoid",
                         IsBullish = false
                     });
                 }
             }
 
-            // ── Bollinger Bands ──────────────────────
-            var bbResults = quotes.GetBollingerBands(20, 2).ToList();
-            var lastBb = bbResults.LastOrDefault(
-                b => b.UpperBand != null && b.LowerBand != null);
-            var lastClose = candles.Last().Close;
+            // ━━━ 6. Supertrend (7,3) ━━━━━━━━━━━━━━━━━
+            // Best intraday trend indicator
+            var stResults = quotes.GetSuperTrend(7, 3).ToList();
+            var lastSt = stResults.LastOrDefault(s => s.SuperTrend != null);
+            if (lastSt != null)
+            {
+                result.Supertrend = (double)(lastSt.SuperTrend ?? 0);
+                result.SupertrendBullish = lastSt.UpperBand == null;
 
+                if (result.SupertrendBullish)
+                {
+                    score += 18; bullSignals++;
+                    result.Signals.Add(new TechnicalSignal
+                    {
+                        Indicator = "Supertrend",
+                        Value = $"₹{result.Supertrend:F1}",
+                        Signal = "Supertrend BUY — Strong uptrend ✅",
+                        IsBullish = true
+                    });
+                }
+                else
+                {
+                    score -= 18; bearSignals++;
+                    result.Signals.Add(new TechnicalSignal
+                    {
+                        Indicator = "Supertrend",
+                        Value = $"₹{result.Supertrend:F1}",
+                        Signal = "Supertrend SELL — Downtrend ❌",
+                        IsBullish = false
+                    });
+                }
+            }
+
+            // ━━━ 7. Bollinger Bands (20,2) ━━━━━━━━━━━━
+            var bbResults = quotes.GetBollingerBands(20, 2).ToList();
+            var lastBb = bbResults.LastOrDefault(b => b.UpperBand != null);
             if (lastBb != null)
             {
                 result.BollingerUpper = (double)(lastBb.UpperBand ?? 0);
@@ -144,26 +301,37 @@ namespace AlgoSenseNSE.API.Services
                 result.BollingerLower = (double)(lastBb.LowerBand ?? 0);
                 result.BollingerPctB = (double)(lastBb.PercentB ?? 0);
 
-                if (lastClose < result.BollingerLower)
+                if (lastClose >= result.BollingerUpper)
                 {
-                    score += 10;
+                    score -= 8;
                     result.Signals.Add(new TechnicalSignal
                     {
                         Indicator = "Bollinger Bands",
-                        Value = $"%B: {result.BollingerPctB:F2}",
-                        Signal = "Below lower band — oversold",
+                        Value = $"%B:{result.BollingerPctB:F2}",
+                        Signal = "At upper band — overextended, caution",
+                        IsBullish = false
+                    });
+                }
+                else if (lastClose <= result.BollingerLower)
+                {
+                    score += 8;
+                    result.Signals.Add(new TechnicalSignal
+                    {
+                        Indicator = "Bollinger Bands",
+                        Value = $"%B:{result.BollingerPctB:F2}",
+                        Signal = "At lower band — potential bounce",
                         IsBullish = true
                     });
                 }
-                else if (lastClose > result.BollingerUpper)
+                else if (lastClose > result.BollingerMiddle)
                 {
-                    score -= 10;
+                    score += 5;
                     result.Signals.Add(new TechnicalSignal
                     {
                         Indicator = "Bollinger Bands",
-                        Value = $"%B: {result.BollingerPctB:F2}",
-                        Signal = "Above upper band — extended",
-                        IsBullish = false
+                        Value = $"%B:{result.BollingerPctB:F2}",
+                        Signal = "Upper half — bullish momentum",
+                        IsBullish = true
                     });
                 }
                 else
@@ -171,68 +339,14 @@ namespace AlgoSenseNSE.API.Services
                     result.Signals.Add(new TechnicalSignal
                     {
                         Indicator = "Bollinger Bands",
-                        Value = $"%B: {result.BollingerPctB:F2}",
-                        Signal = "Within bands — neutral",
-                        IsBullish = null
+                        Value = $"%B:{result.BollingerPctB:F2}",
+                        Signal = "Lower half — bearish momentum",
+                        IsBullish = false
                     });
                 }
             }
 
-            // ── EMA 20 / 50 / 200 ───────────────────
-            var ema20 = quotes.GetEma(20).ToList();
-            var ema50 = quotes.GetEma(50).ToList();
-            var ema200 = quotes.GetEma(200).ToList();
-
-            result.EMA20 = (double)(ema20.LastOrDefault(
-                e => e.Ema != null)?.Ema ?? 0);
-            result.EMA50 = (double)(ema50.LastOrDefault(
-                e => e.Ema != null)?.Ema ?? 0);
-            result.EMA200 = (double)(ema200.LastOrDefault(
-                e => e.Ema != null)?.Ema ?? 0);
-
-            // Price vs EMA trend
-            if (lastClose > result.EMA20 &&
-                result.EMA20 > result.EMA50 &&
-                result.EMA50 > result.EMA200)
-            {
-                score += 15;
-                result.Signals.Add(new TechnicalSignal
-                {
-                    Indicator = "EMA Trend",
-                    Value = $"20:{result.EMA20:F0} 50:{result.EMA50:F0}",
-                    Signal = "Price > EMA20 > EMA50 > EMA200 ✓",
-                    IsBullish = true
-                });
-            }
-            else if (lastClose < result.EMA20 &&
-                     result.EMA20 < result.EMA50)
-            {
-                score -= 12;
-                result.Signals.Add(new TechnicalSignal
-                {
-                    Indicator = "EMA Trend",
-                    Value = $"20:{result.EMA20:F0} 50:{result.EMA50:F0}",
-                    Signal = "Price < EMA20 < EMA50 ✗",
-                    IsBullish = false
-                });
-            }
-            else
-            {
-                result.Signals.Add(new TechnicalSignal
-                {
-                    Indicator = "EMA Trend",
-                    Value = $"20:{result.EMA20:F0} 50:{result.EMA50:F0}",
-                    Signal = "Mixed EMA signals",
-                    IsBullish = null
-                });
-            }
-
-            // ── ATR ─────────────────────────────────
-            var atrResults = quotes.GetAtr(14).ToList();
-            var lastAtr = atrResults.LastOrDefault(a => a.Atr != null);
-            result.ATR = (double)(lastAtr?.Atr ?? 0);
-
-            // ── ADX ─────────────────────────────────
+            // ━━━ 8. ADX (14) — Trend Strength ━━━━━━━━━
             var adxResults = quotes.GetAdx(14).ToList();
             var lastAdx = adxResults.LastOrDefault(a => a.Adx != null);
             if (lastAdx != null)
@@ -243,34 +357,16 @@ namespace AlgoSenseNSE.API.Services
 
                 if (result.ADX > 25)
                 {
-                    bool trendBull = result.PlusDI > result.MinusDI;
-                    score += trendBull ? 10 : -10;
+                    bool trendUp = result.PlusDI > result.MinusDI;
+                    score += trendUp ? 12 : -12;
+                    if (trendUp) bullSignals++; else bearSignals++;
                     result.Signals.Add(new TechnicalSignal
                     {
                         Indicator = "ADX",
-                        Value = result.ADX.ToString("F1"),
-                        Signal = $"Strong {(trendBull ? "uptrend" : "downtrend")} " +
-                                 $"(ADX={result.ADX:F0})",
-                        IsBullish = trendBull
-                    });
-                }
-            }
-
-            // ── VWAP ────────────────────────────────
-            var vwapResults = quotes.GetVwap().ToList();
-            var lastVwap = vwapResults.LastOrDefault(v => v.Vwap != null);
-            if (lastVwap != null)
-            {
-                result.VWAP = (double)(lastVwap.Vwap ?? 0);
-                if (lastClose > result.VWAP)
-                {
-                    score += 5;
-                    result.Signals.Add(new TechnicalSignal
-                    {
-                        Indicator = "VWAP",
-                        Value = $"₹{result.VWAP:F2}",
-                        Signal = "Price above VWAP — bullish",
-                        IsBullish = true
+                        Value = $"ADX:{result.ADX:F0} +DI:{result.PlusDI:F0} -DI:{result.MinusDI:F0}",
+                        Signal = $"Strong {(trendUp ? "uptrend" : "downtrend")} " +
+                                    $"(ADX={result.ADX:F0})",
+                        IsBullish = trendUp
                     });
                 }
                 else
@@ -278,58 +374,88 @@ namespace AlgoSenseNSE.API.Services
                     score -= 5;
                     result.Signals.Add(new TechnicalSignal
                     {
-                        Indicator = "VWAP",
-                        Value = $"₹{result.VWAP:F2}",
-                        Signal = "Price below VWAP — bearish",
-                        IsBullish = false
+                        Indicator = "ADX",
+                        Value = $"ADX:{result.ADX:F0}",
+                        Signal = "Weak trend (ADX<25) — choppy market",
+                        IsBullish = null
                     });
                 }
             }
 
-            // ── Supertrend ──────────────────────────
-            var stResults = quotes.GetSuperTrend(7, 3).ToList();
-            var lastSt = stResults.LastOrDefault(
-                s => s.SuperTrend != null);
-            if (lastSt != null)
-            {
-                result.Supertrend = (double)(lastSt.SuperTrend ?? 0);
-                result.SupertrendBullish = lastSt.UpperBand == null;
+            // ━━━ 9. ATR (14) — Volatility/SL ━━━━━━━━━━
+            var atrResults = quotes.GetAtr(14).ToList();
+            var lastAtr = atrResults.LastOrDefault(a => a.Atr != null);
+            result.ATR = (double)(lastAtr?.Atr ?? 0);
 
-                if (result.SupertrendBullish)
+            // ━━━ 10. Volume Spike ━━━━━━━━━━━━━━━━━━━━━
+            if (avgVol > 0)
+            {
+                double volRatio = lastVol / avgVol;
+                if (volRatio > 2.0)
                 {
-                    score += 8;
+                    score += 12; bullSignals++;
                     result.Signals.Add(new TechnicalSignal
                     {
-                        Indicator = "Supertrend",
-                        Value = $"₹{result.Supertrend:F0}",
-                        Signal = "Supertrend BUY signal ✓",
+                        Indicator = "Volume",
+                        Value = $"{volRatio:F1}x avg",
+                        Signal = $"Huge volume spike {volRatio:F1}x — institutional move",
                         IsBullish = true
                     });
                 }
-                else
+                else if (volRatio > 1.5)
+                {
+                    score += 6;
+                    result.Signals.Add(new TechnicalSignal
+                    {
+                        Indicator = "Volume",
+                        Value = $"{volRatio:F1}x avg",
+                        Signal = $"Above avg volume {volRatio:F1}x — confirms move",
+                        IsBullish = true
+                    });
+                }
+                else if (volRatio < 0.5)
                 {
                     score -= 8;
                     result.Signals.Add(new TechnicalSignal
                     {
-                        Indicator = "Supertrend",
-                        Value = $"₹{result.Supertrend:F0}",
-                        Signal = "Supertrend SELL signal ✗",
+                        Indicator = "Volume",
+                        Value = $"{volRatio:F1}x avg",
+                        Signal = "Low volume — weak move, don't trust",
                         IsBullish = false
                     });
                 }
             }
 
-            // ── Target & Stop Loss using ATR ────────
-            result.SuggestedTarget = lastClose + (result.ATR * 2.5);
-            result.SuggestedStopLoss = lastClose - (result.ATR * 1.5);
+            // ━━━ Target & Stop Loss (ATR-based) ━━━━━━━
+            if (result.ATR > 0)
+            {
+                // Intraday: 1.5x ATR target, 0.75x ATR stop
+                result.SuggestedTarget = lastClose + (result.ATR * 1.5);
+                result.SuggestedStopLoss = lastClose - (result.ATR * 0.75);
+            }
+            else
+            {
+                result.SuggestedTarget = lastClose * 1.005;  // +0.5%
+                result.SuggestedStopLoss = lastClose * 0.9975; // -0.25%
+            }
 
-            // ── Final Score ──────────────────────────
+            // ━━━ Consensus Adjustment ━━━━━━━━━━━━━━━━━
+            // Strong consensus overrides individual scores
+            if (bullSignals >= 4) score = Math.Max(score, 72);
+            else if (bearSignals >= 4) score = Math.Min(score, 28);
+            else if (bullSignals == bearSignals && bullSignals >= 2)
+                score = 48; // Mixed — lean avoid
+
             result.Score = Math.Max(0, Math.Min(100, score));
             result.CalculatedAt = DateTime.Now;
 
             _logger.LogInformation(
-                "✅ Technical score for {symbol}: {score:F1}",
-                symbol, result.Score);
+                "✅ {sym}: Score={score:F0} " +
+                "VWAP={vwap:F1} RSI={rsi:F1} ST={st} " +
+                "ADX={adx:F0} Bull={bull} Bear={bear}",
+                symbol, result.Score, result.VWAP, result.RSI,
+                result.SupertrendBullish ? "BUY" : "SELL",
+                result.ADX, bullSignals, bearSignals);
 
             return result;
         }

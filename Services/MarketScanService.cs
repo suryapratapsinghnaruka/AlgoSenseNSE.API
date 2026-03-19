@@ -22,7 +22,46 @@ namespace AlgoSenseNSE.API.Services
         private Dictionary<string, FundamentalResult> _fundResults = new();
         private Dictionary<string, CompositeScore> _scores = new();
         private List<Recommendation> _recommendations = new();
-        private DateTime _lastFullScan = DateTime.MinValue;
+
+        // ── Best liquid intraday stocks ───────────────
+        // Chosen for: high daily volume, ₹100-₹1000 price range,
+        // tight spreads, clear trends on 5-min charts
+        private readonly List<string> _intradayStocks = new()
+        {
+            // Nifty 50 blue chips — most liquid
+            "SBIN", "BANKBARODA", "CANBK", "UNIONBANK", "MAHABANK",
+            "CENTRALBK", "IOB", "INDIANB", "PNB",
+            // PSU banks best for small capital intraday
+            // (₹50-₹250 range → can buy 5-15 shares with ₹1500)
+
+            // Energy & commodity — strong intraday movers
+            "COALINDIA", "ONGC", "BPCL", "IOC", "GAIL",
+            "NMDC", "NATIONALUM", "HINDALCO", "TATASTEEL",
+
+            // Large cap IT — good gap plays
+            "WIPRO", "HCLTECH", "TECHM", "INFY", "TCS",
+
+            // Pharma momentum
+            "SUNPHARMA", "CIPLA", "DRREDDY", "LUPIN",
+
+            // Infra & power
+            "NTPC", "POWERGRID", "NHPC", "IRFC", "RVNL",
+            "RECLTD", "PFC", "IREDA",
+
+            // High momentum midcaps
+            "IRCTC", "IEX", "SUZLON", "ADANIPORTS",
+            "ADANIPOWER", "TATAPOWER", "BEL",
+
+            // FMCG
+            "ITC", "EMAMILTD", "MARICO",
+
+            // Finance
+            "MUTHOOTFIN", "MANAPPURAM", "LICHSGFIN",
+
+            // Misc liquid
+            "LICI", "INDUSTOWER", "PETRONET",
+            "COLPAL", "HINDUNILVR",
+        };
 
         public MarketScanService(
             AngelOneService angel,
@@ -34,187 +73,77 @@ namespace AlgoSenseNSE.API.Services
             ILogger<MarketScanService> logger,
             IConfiguration config)
         {
-            _angel = angel;
-            _technical = technical;
-            _fundamental = fundamental;
-            _news = news;
-            _scoring = scoring;
-            _ai = ai;
-            _logger = logger;
-            _config = config;
+            _angel = angel; _technical = technical;
+            _fundamental = fundamental; _news = news;
+            _scoring = scoring; _ai = ai;
+            _logger = logger; _config = config;
         }
 
-        // ── Initialize — runs once on startup ────────
+        // ── Initialize on startup ─────────────────────
         public async Task InitializeAsync()
         {
-            _logger.LogInformation("🚀 Initializing market scan...");
-
+            _logger.LogInformation("🚀 Initializing AlgoSense Intraday...");
             await _angel.LoginAsync();
-
-            var allSymbols = new List<string>();
-            _symbolTokenMap = await _angel.GetSymbolTokenMapAsync(allSymbols);
-
+            _symbolTokenMap = await _angel
+                .GetSymbolTokenMapAsync(new List<string>());
             await RunFullDailyScanAsync();
-
             _logger.LogInformation(
-                "✅ Initialization complete. Tracking {t1} Tier1, {t2} Tier2 stocks",
-                _tier1Symbols.Count, _tier2Symbols.Count);
+                "✅ Ready. Tracking {n} intraday stocks",
+                _tier1Symbols.Count);
         }
 
         // ── Full daily scan ───────────────────────────
         public async Task RunFullDailyScanAsync()
         {
-            _logger.LogInformation("🔍 Running full daily market scan...");
-
+            _logger.LogInformation("🔍 Running intraday market scan...");
             try
             {
-                var equitySymbols = _symbolTokenMap.Keys
-                    .Where(s =>
-                        !s.Contains(" ") && !s.Contains("-") &&
-                        !s.Contains("&") && !s.EndsWith("BE") &&
-                        !s.EndsWith("BL") && !s.EndsWith("GS") &&
-                        s.Length >= 2 && s.Length <= 20 &&
-                        !s.StartsWith("Nifty") && !s.StartsWith("NIFTY") &&
-                        !s.StartsWith("SENSEX") && !s.StartsWith("India") &&
-                        char.IsLetter(s[0]))
-                    .ToList();
+                // Filter to stocks in token map
+                var validStocks = _intradayStocks
+                    .Where(s => _symbolTokenMap.ContainsKey(s))
+                    .Distinct().ToList();
 
                 _logger.LogInformation(
-                    "📊 Filtered to {count} equity symbols from {total} total instruments",
-                    equitySymbols.Count, _symbolTokenMap.Count);
+                    "📋 Valid intraday stocks: {n}", validStocks.Count);
 
-                var tier1KnownSymbols = new List<string>
-                {
-                    // Nifty 50
-                    "RELIANCE","TCS","HDFCBANK","INFY","ICICIBANK",
-                    "HINDUNILVR","BAJFINANCE","SBIN","BHARTIARTL",
-                    "KOTAKBANK","AXISBANK","LT","MARUTI","SUNPHARMA",
-                    "TITAN","WIPRO","DRREDDY","TATASTEEL","ONGC",
-                    "NTPC","POWERGRID","TECHM","DIVISLAB","NESTLEIND",
-                    "ULTRACEMCO","ASIANPAINT","COALINDIA","BPCL",
-                    "IOC","GRASIM","ADANIPORTS","TATACONSUM","BAJAJFINSV",
-                    "HCLTECH","INDUSINDBK","JSWSTEEL","BRITANNIA",
-                    "CIPLA","EICHERMOT",
-                    // Nifty Next 50
-                    "ZOMATO","ADANIENT","ADANIGREEN","ADANIPOWER",
-                    "APOLLOHOSP","BANKBARODA","BERGEPAINT","BEL",
-                    "BHEL","BOSCHLTD","CANBK","CHOLAFIN","COLPAL",
-                    "DABUR","DLF","GAIL","GODREJCP","HAVELLS",
-                    "HEROMOTOCO","HINDALCO","ICICIGI","ICICIPRULI",
-                    "IGL","INDUSTOWER","IRCTC","LICI","LODHA",
-                    "LUPIN","M&M","MUTHOOTFIN",
-                    "NAUKRI","OFSS","PAGEIND","PIDILITIND",
-                    "POLYCAB","RECLTD","SHRIRAMFIN","SIEMENS",
-                    "SRF","TATACOMM","TORNTPHARM","TRENT",
-                    "TVSMOTOR","UBL","UNIONBANK","VBL",
-                    "VEDL","ZYDUSLIFE",
-                    // Quality midcaps
-                    "ABCAPITAL","ABFRL","ACC","AIAENG","AJANTPHARM",
-                    "ALKEM","AMBUJACEM","APLAPOLLO","ASTRAL",
-                    "ATUL","AUBANK","AUROPHARMA","AVANTIFEED",
-                    "BALKRISIND","BANDHANBNK","BATAINDIA","BAYERCROP",
-                    "BIKAJI","BLUEDART","BLUESTARCO","BSOFT","CAMS",
-                    "CANFINHOME","CASTROLIND","CEATLTD","CENTRALBK",
-                    "CLEAN","COFORGE","CONCOR","COROMANDEL","CROMPTON",
-                    "CUMMINSIND","CYIENT","DALBHARAT","DEEPAKNTR",
-                    "DELHIVERY","DEVYANI","DIXON","DMART","DODLA",
-                    "ECLERX","EIDPARRY","EIHOTEL","ELGIEQUIP",
-                    "EMAMILTD","ENDURANCE","ENGINERSIN","EQUITASBNK",
-                    "ESCORTS","EXIDEIND","FEDERALBNK","FINCABLES",
-                    "FINPIPE","FLUOROCHEM","FORTIS","GICRE","GILLETTE",
-                    "GLAXO","GLENMARK","GNFC","GODFRYPHLP","GODREJIND",
-                    "GODREJPROP","GRANULES","GRINFRA","GSPL","GUJGASLTD",
-                    "HAPPSTMNDS","HDFCAMC","HDFCLIFE","HINDCOPPER",
-                    "HINDZINC","HONAUT","HUDCO","IDBI","IDFCFIRSTB",
-                    "IEX","IFBIND","IIFL","INDIANB","INDIGO","INDOSTAR",
-                    "INOXWIND","INTELLECT","IOB","IPCALAB","IRB",
-                    "IREDA","IRFC","ITC","JBCHEPHARM","JKCEMENT",
-                    "JKLAKSHMI","JKPAPER","JKTYRE","JUBLFOOD","JUSTDIAL",
-                    "KAJARIACER","KANSAINER","KARURVYSYA","KEC",
-                    "KESORAMIND","KFINTECH","KPIL","KRBL","KSCL",
-                    "LALPATHLAB","LATENTVIEW","LAURUSLABS","LICHSGFIN",
-                    "LINDEINDIA","LTTS","LUXIND","M&MFIN","MAHABANK",
-                    "MANAPPURAM","MARICO","MAXHEALTH","MFSL","MIDHANI",
-                    "MMTC","MOTHERSON","MPHASIS","MRF","NATCOPHARM",
-                    "NATIONALUM","NAVINFLUOR","NBCC","NCC","NHPC",
-                    "NLCINDIA","NMDC","NSLNISP","NYKAA","OIL",
-                    "OLECTRA","PAYTM","PCBL","PERSISTENT","PETRONET",
-                    "PFC","PFIZER","PHOENIXLTD","PIIND","PNBHOUSING",
-                    "POLICYBZR","PRESTIGE","PRINCEPIPE","PRSMJOHNSN",
-                    "PSUBANK","PVRINOX","RADICO","RAILTEL","RAJESHEXPO",
-                    "RALLIS","RAMCOCEM","RATNAMANI","RAYMOND","RBLBANK",
-                    "REDINGTON","RELAXO","RITES","RVNL","SAFARI",
-                    "SAIL","SANOFI","SAPPHIRE","SAREGAMA","SCHAEFFLER",
-                    "SHREECEM","SHREDIGCEM","SHYAMMETL","SKFINDIA",
-                    "SOBHA","SOLARA","SONACOMS","SPANDANA","SPARC",
-                    "STAR","STOVEKRAFT","SUMICHEM","SUNDARMFIN",
-                    "SUNDRMFAST","SUNTV","SUPRAJIT","SUPREMEIND",
-                    "SUZLON","SYMPHONY","TANLA","TATACHEM","TATAELXSI",
-                    "TATAINVEST","TATAPOWER","TATVA","TEAMLEASE",
-                    "THERMAX","THYROCARE","TIMKEN","TITAGARH","TORNTPOWER",
-                    "TTML","TVSHLTD","UCOBANK","UJJIVANSFB","UNIPARTS",
-                    "UNITDSPR","UPL","UTIAMC","VAIBHAVGBL","VAKRANGEE",
-                    "VARROC","VGUARD","VINATIORGA","VOLTAS","VSTIND",
-                    "WELCORP","WHIRLPOOL","WOCKPHARMA","WONDERLA",
-                    "XCHANGING","YESBANK","ZEEL","ZEEMEDIA","ZENTEC","ZENSARTECH"
-                };
+                // Fundamental screen (for context)
+                _logger.LogInformation(
+                    "📋 Running fundamental screen on {n} stocks...",
+                    validStocks.Count);
 
-                var validSymbols = tier1KnownSymbols
-                    .Where(s => _symbolTokenMap.ContainsKey(s))
-                    .Distinct()
-                    .ToList();
-
-                _logger.LogInformation("📋 Valid quality symbols: {count}", validSymbols.Count);
-
-                // ── Fundamental screening ─────────────────
-                _logger.LogInformation("📋 Step 2: Running fundamental screen on {count} stocks...",
-                    validSymbols.Count);
-
-                var qualitySymbols = new List<string>();
-                var fundScores = new Dictionary<string, double>();
-                int processed = 0;
-
-                foreach (var symbol in validSymbols)
+                int done = 0;
+                foreach (var sym in validStocks)
                 {
                     try
                     {
-                        var fund = await _fundamental.GetFundamentalsAsync(symbol);
-                        _fundResults[symbol] = fund;
-                        qualitySymbols.Add(symbol);
-                        fundScores[symbol] = fund.Score;
-
-                        processed++;
-                        if (processed % 10 == 0)
-                            _logger.LogInformation("📊 Screened {done}/{total} stocks...",
-                                processed, validSymbols.Count);
-
+                        var fund = await _fundamental.GetFundamentalsAsync(sym);
+                        _fundResults[sym] = fund;
+                        done++;
+                        if (done % 10 == 0)
+                            _logger.LogInformation(
+                                "📊 Screened {d}/{t}...", done, validStocks.Count);
                         await Task.Delay(800);
                     }
-                    catch (Exception ex)
+                    catch
                     {
-                        _logger.LogWarning("⚠️ Fundamental fetch failed for {s}: {m}",
-                            symbol, ex.Message);
-                        qualitySymbols.Add(symbol);
-                        fundScores[symbol] = 50;
+                        _fundResults[sym] = new FundamentalResult
+                        { Symbol = sym, Score = 50 };
                     }
                 }
 
-                _allQualitySymbols = qualitySymbols;
-
-                var sorted = qualitySymbols
-                    .OrderByDescending(s => fundScores.GetValueOrDefault(s))
-                    .ToList();
-
-                _tier1Symbols = sorted.Take(100).ToList();
-                _tier2Symbols = sorted.Skip(100).Take(400).ToList();
-                _lastFullScan = DateTime.Now;
+                // All go to tier1 for intraday (we want all 50 monitored)
+                _tier1Symbols = validStocks.Take(50).ToList();
+                _tier2Symbols = validStocks.Skip(50).ToList();
+                _allQualitySymbols = validStocks;
 
                 _logger.LogInformation(
-                    "✅ Full scan complete: {total} quality stocks, {t1} Tier1, {t2} Tier2",
-                    qualitySymbols.Count, _tier1Symbols.Count, _tier2Symbols.Count);
+                    "✅ Scan complete: {t1} Tier1 intraday stocks",
+                    _tier1Symbols.Count);
 
-                // Technical analysis on top 30 by fundamental score
-                await RefreshTechnicalAnalysisAsync(_tier1Symbols.Take(30).ToList());
+                // First technical scan if market is open
+                if (IsMarketOpen())
+                    await RefreshIntradaySignalsAsync(
+                        _tier1Symbols.Take(30).ToList());
 
                 await RefreshRecommendationsAsync();
             }
@@ -224,124 +153,153 @@ namespace AlgoSenseNSE.API.Services
             }
         }
 
-        // ── Update live prices — SEQUENTIAL not parallel ──
-        // Parallel was causing 100 concurrent API calls → rate limit storm
+        // ── 5-min candle technical refresh ───────────
+        public async Task RefreshIntradaySignalsAsync(List<string> symbols)
+        {
+            _logger.LogInformation(
+                "📈 Refreshing 5-min signals for {n} stocks...",
+                symbols.Count);
+            _ai.ClearAllCache();
+
+            foreach (var sym in symbols)
+            {
+                try
+                {
+                    if (!_symbolTokenMap.TryGetValue(sym, out var token))
+                        continue;
+
+                    // Fetch 5 days of 5-min candles (~375 bars)
+                    var candles = await _angel.GetOhlcvAsync(
+                        sym, token, "FIVE_MINUTE", 5);
+
+                    if (candles.Count < 30)
+                    {
+                        // Not enough data — use fundamental score only
+                        var fs = _fundResults
+                            .TryGetValue(sym, out var f) ? f.Score : 50;
+                        var ns = _news.GetSymbolSentiment(sym);
+                        _scores[sym] = new CompositeScore
+                        {
+                            Symbol = sym,
+                            TechnicalScore = 50,
+                            FundamentalScore = fs,
+                            NewsScore = Math.Max(0, Math.Min(100,
+                                50 + ns * 40)),
+                            FinalScore = fs * 0.15 + 50 * 0.70 +
+                                Math.Max(0, Math.Min(100, 50 + ns * 40)) * 0.15,
+                            CalculatedAt = DateTime.Now
+                        };
+                        continue;
+                    }
+
+                    // Compute all 10 indicators
+                    var tech = _technical.Compute(sym, candles);
+                    _techResults[sym] = tech;
+
+                    // Composite score (intraday weights)
+                    var newsSent = _news.GetSymbolSentiment(sym);
+                    var fundScore = _fundResults
+                        .TryGetValue(sym, out var fr) ? fr.Score : 50;
+                    var newsScore = Math.Max(0, Math.Min(100,
+                        50 + newsSent * 40));
+
+                    // Technical: 70%, Fundamental: 15%, News: 15%
+                    _scores[sym] = new CompositeScore
+                    {
+                        Symbol = sym,
+                        TechnicalScore = Math.Round(tech.Score, 1),
+                        FundamentalScore = Math.Round(fundScore, 1),
+                        NewsScore = Math.Round(newsScore, 1),
+                        FinalScore = Math.Round(
+                            tech.Score * 0.70 +
+                            fundScore * 0.15 +
+                            newsScore * 0.15, 1),
+                        CalculatedAt = DateTime.Now
+                    };
+
+                    await Task.Delay(500);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(
+                        "⚠️ Signal failed for {sym}: {msg}", sym, ex.Message);
+                }
+            }
+
+            _logger.LogInformation(
+                "✅ Intraday signals updated for {n} stocks", symbols.Count);
+        }
+
+        // ── Legacy alias ──────────────────────────────
+        public async Task RefreshTechnicalAnalysisAsync(List<string> symbols)
+            => await RefreshIntradaySignalsAsync(symbols);
+
+        // ── Live prices — sequential ──────────────────
         public async Task UpdateLivePricesAsync(List<string> symbols)
         {
-            // Only update in batches of 10 with throttling between each
-            foreach (var symbol in symbols)
+            foreach (var sym in symbols)
             {
-                if (!_symbolTokenMap.TryGetValue(symbol, out var token)) continue;
-
-                var price = await _angel.GetLivePriceAsync(symbol, token);
-                if (price != null)
-                    _livePrices[symbol] = price;
-
-                // ThrottleAsync inside GetLivePriceAsync handles pacing
-                // but add a tiny extra delay between symbols
+                if (!_symbolTokenMap.TryGetValue(sym, out var token))
+                    continue;
+                var price = await _angel.GetLivePriceAsync(sym, token);
+                if (price != null) _livePrices[sym] = price;
                 await Task.Delay(50);
             }
         }
 
-        // ── Refresh technical analysis ────────────────
-        public async Task RefreshTechnicalAnalysisAsync(List<string> symbols)
-        {
-            foreach (var symbol in symbols)
-            {
-                try
-                {
-                    if (!_symbolTokenMap.TryGetValue(symbol, out var token)) continue;
-
-                    var candles = await _angel.GetOhlcvAsync(symbol, token, "ONE_DAY", 200);
-
-                    if (candles.Count < 50)
-                    {
-                        _logger.LogDebug(
-                            "⚠️ Not enough candles for {sym}: {count} — skipping technical",
-                            symbol, candles.Count);
-
-                        // Still compute score using fundamentals only
-                        var fundScore = _fundResults.TryGetValue(symbol, out var f)
-                            ? f.Score : 50;
-                        var newsSentiment = _news.GetSymbolSentiment(symbol);
-                        var score = _scoring.Compute(symbol, 50, fundScore, newsSentiment);
-                        _scores[symbol] = score;
-                        continue;
-                    }
-
-                    var tech = _technical.Compute(symbol, candles);
-                    _techResults[symbol] = tech;
-
-                    var newsSent = _news.GetSymbolSentiment(symbol);
-                    var fundScr = _fundResults.TryGetValue(symbol, out var fr) ? fr.Score : 50;
-                    var compositeScore = _scoring.Compute(symbol, tech.Score, fundScr, newsSent);
-                    _scores[symbol] = compositeScore;
-
-                    // Small delay between OHLCV fetches
-                    await Task.Delay(600);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning("⚠️ Technical analysis failed for {sym}: {msg}",
-                        symbol, ex.Message);
-                }
-            }
-        }
-
-        // ── Generate Top 3 recommendations ───────────
+        // ── Top 3 recommendations ─────────────────────
         public async Task RefreshRecommendationsAsync()
         {
             try
             {
-                // Merge fundamental-only scores for stocks without technical
-                var allScored = _fundResults
-                    .Where(f => f.Value.Score > 0)
-                    .Select(f =>
+                // Rank by score + bonus for strong signals
+                var ranked = _scores
+                    .Where(s => s.Value.FinalScore > 0)
+                    .Select(s =>
                     {
-                        if (_scores.TryGetValue(f.Key, out var sc)) return (f.Key, sc);
-                        // No technical yet — use fundamental score at 70% weight
-                        var newsSentiment = _news.GetSymbolSentiment(f.Key);
-                        var ns = 50 + (newsSentiment * 40);
-                        var fs = f.Value.Score * 0.7 + ns * 0.3;
-                        return (f.Key, new CompositeScore
-                        {
-                            Symbol = f.Key,
-                            FundamentalScore = f.Value.Score,
-                            TechnicalScore = 50,
-                            NewsScore = Math.Max(0, Math.Min(100, ns)),
-                            FinalScore = Math.Round(fs, 1)
-                        });
+                        var tech = _techResults.GetValueOrDefault(s.Key);
+                        var lp = _livePrices.GetValueOrDefault(s.Key);
+                        double bonus = 0;
+                        if (tech?.SupertrendBullish == true) bonus += 5;
+                        if (tech != null && lp != null &&
+                            lp.LTP > tech.VWAP && tech.VWAP > 0) bonus += 5;
+                        if (tech?.ADX > 25) bonus += 3;
+                        return (Symbol: s.Key, Score: s.Value,
+                            AdjScore: s.Value.FinalScore + bonus);
                     })
-                    .OrderByDescending(x => x.Item2.FinalScore)
+                    .OrderByDescending(x => x.AdjScore)
                     .Take(10)
                     .ToList();
 
-                var recommendations = new List<Recommendation>();
+                var recs = new List<Recommendation>();
                 int rank = 1;
 
-                foreach (var (symbol, score) in allScored.Take(3))
+                foreach (var item in ranked.Take(3))
                 {
-                    var price = _livePrices.GetValueOrDefault(symbol);
+                    var sym = item.Symbol;
+                    var score = item.Score;
+                    var lp = _livePrices.GetValueOrDefault(sym);
+
                     var stock = new StockInfo
                     {
-                        Symbol = symbol,
-                        LastPrice = price?.LTP ?? 0,
-                        Change = price?.Change ?? 0,
-                        ChangePercent = price?.ChangePercent ?? 0,
-                        High = price?.High ?? 0,
-                        Low = price?.Low ?? 0,
-                        Volume = price?.Volume ?? 0
+                        Symbol = sym,
+                        LastPrice = lp?.LTP ?? 0,
+                        Change = lp?.Change ?? 0,
+                        ChangePercent = lp?.ChangePercent ?? 0,
+                        High = lp?.High ?? 0,
+                        Low = lp?.Low ?? 0,
+                        Volume = lp?.Volume ?? 0
                     };
 
-                    var tech = _techResults.GetValueOrDefault(symbol)
-                        ?? new TechnicalResult { Symbol = symbol, Score = 50 };
-                    var fund = _fundResults.GetValueOrDefault(symbol)
-                        ?? new FundamentalResult { Symbol = symbol };
-                    var relatedNews = _news.GetNewsForSymbol(symbol);
+                    var tech = _techResults.GetValueOrDefault(sym)
+                             ?? new TechnicalResult { Symbol = sym, Score = 50 };
+                    var fund = _fundResults.GetValueOrDefault(sym)
+                             ?? new FundamentalResult { Symbol = sym };
+                    var news = _news.GetNewsForSymbol(sym);
+                    var ai = await _ai.AnalyzeStockAsync(
+                        stock, tech, fund, news, score);
 
-                    var ai = await _ai.AnalyzeStockAsync(stock, tech, fund, relatedNews, score);
-
-                    recommendations.Add(new Recommendation
+                    recs.Add(new Recommendation
                     {
                         Rank = rank++,
                         Stock = stock,
@@ -349,28 +307,50 @@ namespace AlgoSenseNSE.API.Services
                         Fundamental = fund,
                         Score = score,
                         AiAnalysis = ai,
-                        RelatedNews = relatedNews,
+                        RelatedNews = news,
                         GeneratedAt = DateTime.Now
                     });
                 }
 
-                _recommendations = recommendations;
-                _logger.LogInformation("✅ Recommendations updated: {symbols}",
-                    string.Join(", ", recommendations.Select(r => r.Stock.Symbol)));
+                _recommendations = recs;
+                _logger.LogInformation("✅ Picks: {syms}",
+                    string.Join(", ", recs.Select(r =>
+                        $"{r.Stock.Symbol}({r.AiAnalysis?.Recommendation})")));
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "❌ Failed to refresh recommendations");
+                _logger.LogError(ex, "❌ RefreshRecommendations failed");
+            }
+        }
+
+        private bool IsMarketOpen()
+        {
+            try
+            {
+                var now = TimeZoneInfo.ConvertTime(DateTime.UtcNow,
+                    TimeZoneInfo.FindSystemTimeZoneById(
+                        "India Standard Time"));
+                if (now.DayOfWeek == DayOfWeek.Saturday ||
+                    now.DayOfWeek == DayOfWeek.Sunday) return false;
+                return now.TimeOfDay >= new TimeSpan(9, 15, 0) &&
+                       now.TimeOfDay <= new TimeSpan(15, 30, 0);
+            }
+            catch
+            {
+                var now = DateTime.UtcNow.AddHours(5).AddMinutes(30);
+                if (now.DayOfWeek == DayOfWeek.Saturday ||
+                    now.DayOfWeek == DayOfWeek.Sunday) return false;
+                return now.Hour >= 9 && now.Hour < 16;
             }
         }
 
         // ── Public getters ────────────────────────────
         public List<Recommendation> GetRecommendations() => _recommendations;
         public List<LivePrice> GetLivePrices() => _livePrices.Values.ToList();
-        public LivePrice? GetLivePrice(string symbol) => _livePrices.GetValueOrDefault(symbol);
-        public TechnicalResult? GetTechnical(string symbol) => _techResults.GetValueOrDefault(symbol);
-        public FundamentalResult? GetFundamental(string symbol) => _fundResults.GetValueOrDefault(symbol);
-        public CompositeScore? GetScore(string symbol) => _scores.GetValueOrDefault(symbol);
+        public LivePrice? GetLivePrice(string s) => _livePrices.GetValueOrDefault(s);
+        public TechnicalResult? GetTechnical(string s) => _techResults.GetValueOrDefault(s);
+        public FundamentalResult? GetFundamental(string s) => _fundResults.GetValueOrDefault(s);
+        public CompositeScore? GetScore(string s) => _scores.GetValueOrDefault(s);
         public List<string> GetTier1Symbols() => _tier1Symbols;
         public List<string> GetTier2Symbols() => _tier2Symbols;
         public List<string> GetAllSymbols() => _symbolTokenMap.Keys.ToList();
