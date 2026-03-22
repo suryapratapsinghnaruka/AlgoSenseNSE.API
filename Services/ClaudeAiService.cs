@@ -10,16 +10,20 @@ namespace AlgoSenseNSE.API.Services
         private readonly IConfiguration _config;
         private readonly ILogger<ClaudeAiService> _logger;
         private readonly HttpClient _http;
+        private readonly NseIndiaService _nse;
+
         private readonly Dictionary<string, AiAnalysis> _cache = new();
 
         public ClaudeAiService(
             IConfiguration config,
             ILogger<ClaudeAiService> logger,
-            IHttpClientFactory httpClientFactory)
+            IHttpClientFactory httpClientFactory,
+            NseIndiaService nse)
         {
             _config = config;
             _logger = logger;
             _http = httpClientFactory.CreateClient("Claude");
+            _nse = nse;
         }
 
         public async Task<AiAnalysis> AnalyzeStockAsync(
@@ -38,101 +42,180 @@ namespace AlgoSenseNSE.API.Services
             {
                 var capital = _config.GetValue<double>("Trading:Capital", 1500);
                 var ist = GetIST();
-                var minsLeft = (int)(new DateTime(ist.Year, ist.Month, ist.Day,
-                    15, 30, 0) - ist).TotalMinutes;
+                var minsLeft = (int)(new DateTime(ist.Year, ist.Month,
+                    ist.Day, 15, 30, 0) - ist).TotalMinutes;
                 var timeCtx = minsLeft > 0
-                    ? $"Market closes in {minsLeft} min"
+                    ? $"Market closes in {minsLeft} min ({ist:HH:mm} IST)"
                     : "Market closed — pre-market analysis";
 
-                // Shares based on capital
                 int shares = stock.LastPrice > 0
                     ? (int)(capital * 0.60 / stock.LastPrice) : 0;
 
-                // Bull/bear signal count
+                double brokerage = 40.0;
+                double minProfitNeeded = shares > 0
+                    ? brokerage / shares : 999;
+
+                // ── Fetch live market context ──────────
+                var mktCtx = await _nse.GetMarketContextAsync();
+                var sector = _nse.GetSectorForSymbol(stock.Symbol);
+                var sectorPerf = _nse.GetSectorPerformance(
+                    stock.Symbol, mktCtx);
+                string sectorText = sectorPerf != null
+                    ? $"{sector}: {(sectorPerf.ChangePercent >= 0 ? "+" : "")}{sectorPerf.ChangePercent:F2}% today"
+                    : $"{sector}: Data unavailable";
+
+                // ── Signal details ─────────────────────
                 int bullCount = tech.Signals.Count(s => s.IsBullish == true);
                 int bearCount = tech.Signals.Count(s => s.IsBullish == false);
                 string consensus = bullCount > bearCount
-                    ? $"BULLISH ({bullCount} bull vs {bearCount} bear)"
+                    ? $"BULLISH ({bullCount} bull vs {bearCount} bear signals)"
                     : bearCount > bullCount
-                    ? $"BEARISH ({bearCount} bear vs {bullCount} bull)"
-                    : "MIXED — signals equal";
+                    ? $"BEARISH ({bearCount} bear vs {bullCount} bull signals)"
+                    : "MIXED — equal bull/bear";
 
-                // Brokerage impact
-                double brokerage = 40.0;
-                double minProfitNeeded = brokerage / Math.Max(shares, 1);
+                // All bullish signals as text
+                var bullSignals = tech.Signals
+                    .Where(s => s.IsBullish == true)
+                    .Select(s => $"  ✅ {s.Indicator}: {s.Signal}")
+                    .ToList();
+                var bearSignals = tech.Signals
+                    .Where(s => s.IsBullish == false)
+                    .Select(s => $"  ❌ {s.Indicator}: {s.Signal}")
+                    .ToList();
 
                 var newsText = news.Any()
                     ? string.Join("\n", news.Take(3)
-                        .Select(n => $"  - {n.Headline} [{n.SentimentLabel}]"))
+                        .Select(n => $"  • {n.Headline} [{n.SentimentLabel}]"))
                     : "  No specific news today";
 
-                var prompt = $@"You are an expert NSE intraday trader.
+                // ── Top/weak sectors ───────────────────
+                var topSectors = mktCtx.TopSectors.Any()
+                    ? string.Join(", ", mktCtx.TopSectors)
+                    : "Data unavailable";
+                var weakSectors = mktCtx.WeakSectors.Any()
+                    ? string.Join(", ", mktCtx.WeakSectors)
+                    : "Data unavailable";
+
+                // ── Build improved multi-layer prompt ──
+                var prompt = $@"You are an expert NSE intraday trader with 15 years experience.
 Help a beginner make ₹100-₹200 profit today with ₹{capital:N0} capital.
+{timeCtx}
 
-STOCK: {stock.Symbol} | CMP: ₹{stock.LastPrice:F2}
-Time: {ist:HH:mm} IST | {timeCtx}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+LAYER 1: MARKET CONTEXT (most important)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Nifty 50:      ₹{mktCtx.NiftyLtp:N0} ({(mktCtx.NiftyChange >= 0 ? "+" : "")}{mktCtx.NiftyChange:F2}%)
+Nifty Trend:   {mktCtx.NiftyTrend}
+Nifty Position:{mktCtx.NiftyDayPosition}
 
-━━━ 5-MIN CANDLE INDICATORS ━━━
-Score:        {score.FinalScore:F0}/100
-VWAP:         ₹{tech.VWAP:F2} → Price is {(stock.LastPrice > tech.VWAP ? "ABOVE ✅" : "BELOW ❌")}
-EMA 9:        ₹{tech.EMA20:F2}
-EMA 21:       ₹{tech.EMA50:F2} → {(tech.EMA20 > tech.EMA50 ? "Bullish ✅" : "Bearish ❌")}
-RSI (14):     {tech.RSI:F1} → {(tech.RSI > 60 ? "Strong ✅" : tech.RSI < 40 ? "Weak ❌" : "Neutral")}
-MACD Hist:    {tech.MACDHistogram:F3} {(tech.MACDHistogram > 0 ? "✅" : "❌")}
-Supertrend:   {(tech.SupertrendBullish ? "BUY ✅" : "SELL ❌")}
-ADX:          {tech.ADX:F0} {(tech.ADX > 25 ? "(Strong trend)" : "(Weak trend ⚠️)")}
-ATR:          ₹{tech.ATR:F2}
+India VIX:     {mktCtx.IndiaVix:F1} ({(mktCtx.VixChange >= 0 ? "+" : "")}{mktCtx.VixChange:F2})
+VIX Signal:    {mktCtx.VixInterpretation}
 
-CONSENSUS: {consensus}
+FII Activity:  ₹{mktCtx.FiiNetCrore:N0} Cr → {mktCtx.FiiSentiment}
+DII Activity:  {mktCtx.DiiSentiment}
 
-━━━ TRADE SETUP ━━━
-Suggested Entry: ₹{stock.LastPrice:F2}
-Suggested Target: ₹{tech.SuggestedTarget:F2}
-Suggested SL:    ₹{tech.SuggestedStopLoss:F2}
+Market Quality:{mktCtx.MarketQualityScore}/100 — {mktCtx.MarketQualityLabel}
 
-━━━ CAPITAL MATH (₹{capital:N0}) ━━━
-Shares affordable: {shares}
-Min profit needed to beat brokerage: ₹{minProfitNeeded:F2}/share
-Brokerage cost: ₹{brokerage:F0} (buy+sell Angel One)
+Strong Sectors:  {topSectors}
+Weak Sectors:    {weakSectors}
+This Stock's Sector: {sectorText}
 
-━━━ FUNDAMENTALS ━━━
-PE: {fund.PE:F1} | ROE: {fund.ROE:F1}% | Promoter: {fund.PromoterHolding:F1}%
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+LAYER 2: STOCK TECHNICAL (5-min candles)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Stock:    {stock.Symbol} | CMP: ₹{stock.LastPrice:F2}
+Score:    {score.FinalScore:F0}/100
 
-━━━ NEWS ━━━
+VWAP:     ₹{tech.VWAP:F2} → Price {(stock.LastPrice > tech.VWAP ? "ABOVE VWAP ✅ (bullish)" : "BELOW VWAP ❌ (bearish)")}
+EMA 9:    ₹{tech.EMA20:F2} | EMA 21: ₹{tech.EMA50:F2} → {(tech.EMA20 > tech.EMA50 ? "EMA9 > EMA21 ✅ Bullish" : "EMA9 < EMA21 ❌ Bearish")}
+EMA 50:   ₹{tech.EMA200:F2} → Price {(stock.LastPrice > tech.EMA200 ? "above ✅" : "below ❌")} medium-term trend
+RSI(14):  {tech.RSI:F1} → {(tech.RSI >= 55 && tech.RSI <= 72 ? "✅ Bullish zone (55-72)" : tech.RSI > 72 ? "❌ Overbought (>72)" : tech.RSI < 40 ? "❌ Oversold (<40)" : "⚠️ Neutral")}
+MACD:     Histogram={tech.MACDHistogram:F3} → {(tech.MACDHistogram > 0 ? "✅ Bullish momentum" : "❌ Bearish momentum")}
+Supertrend: {(tech.SupertrendBullish ? "✅ BUY signal (most reliable)" : "❌ SELL signal")}
+ADX:      {tech.ADX:F0} → {(tech.ADX > 25 ? "✅ Strong trend present" : tech.ADX > 15 ? "⚠️ Moderate trend" : "❌ No trend (choppy)")}
+ATR:      ₹{tech.ATR:F2} (volatility measure)
+BB %B:    {tech.BollingerPctB:F2} → {(tech.BollingerPctB > 0.8 ? "Near upper band (overbought)" : tech.BollingerPctB < 0.2 ? "Near lower band (oversold)" : "Middle of bands")}
+
+INDICATOR CONSENSUS: {consensus}
+Bull Signals:
+{(bullSignals.Any() ? string.Join("\n", bullSignals) : "  None")}
+Bear Signals:
+{(bearSignals.Any() ? string.Join("\n", bearSignals) : "  None")}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+LAYER 3: FUNDAMENTAL QUALITY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PE Ratio:  {fund.PE:F1} | ROE: {fund.ROE:F1}% | ROCE: {fund.ROCE:F1}%
+Promoter:  {fund.PromoterHolding:F1}% holding (>{60}% = good)
+Fund Score:{fund.Score}/100
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+LAYER 4: NEWS SENTIMENT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 {newsText}
 
-STRICT RULES YOU MUST FOLLOW:
-1. If ADX < 20 → AVOID (no trend, choppy)
-2. If MACD and Supertrend conflict → AVOID
-3. If RSI > 75 → AVOID (overbought)
-4. If consensus is MIXED → AVOID
-5. Stop loss must be within 0.75% of entry
-6. Target must give at least ₹{brokerage * 2:F0} profit after brokerage
-7. Target must be achievable within 1-2 hours
-8. If less than 60 min to market close → AVOID
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CAPITAL & TRADE SETUP
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Capital:         ₹{capital:N0}
+Max shares:      {shares} (using 60% capital)
+Suggested entry: ₹{stock.LastPrice:F2}
+Suggested target:₹{tech.SuggestedTarget:F2} (+{((tech.SuggestedTarget - stock.LastPrice) / stock.LastPrice * 100):F2}%)
+Suggested SL:    ₹{tech.SuggestedStopLoss:F2} (-{((stock.LastPrice - tech.SuggestedStopLoss) / stock.LastPrice * 100):F2}%)
+Brokerage:       ₹{brokerage:F0} round trip
+Min profit/share needed: ₹{minProfitNeeded:F2}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+DECISION RULES (follow strictly)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ALWAYS AVOID if:
+• Market Quality < 40 (bad market day)
+• VIX > 22 (too fearful)
+• FII sold > ₹2000Cr (institutions exiting)
+• Nifty down > 1% (strong bear day)
+• Stock's sector is in weak sectors list
+• Supertrend = SELL
+• Price below VWAP
+• ADX < 15 (no trend)
+• Less than 60 min to market close
+• Shares affordable = 0 (too expensive)
+• Expected profit < brokerage × 1.5
+
+STRONG BUY if ALL true:
+• Market Quality > 60
+• VIX < 18
+• FII net positive or DII supporting
+• Supertrend = BUY ✅
+• Price above VWAP ✅
+• RSI 55-72 ✅
+• ADX > 20 ✅
+• Stock's sector is strong today ✅
+• 4+ bullish signals ✅
 
 Respond ONLY in this exact JSON. No markdown, no extra text:
 {{
   ""recommendation"": ""BUY"" or ""AVOID"",
-  ""confidence"": <55-92>,
-  ""entry"": <price>,
-  ""target"": <realistic intraday target>,
-  ""stopLoss"": <strict — max 0.75% below entry>,
+  ""confidence"": <50-95>,
+  ""entry"": <exact entry price>,
+  ""target"": <realistic intraday target — achievable in 1-2 hrs>,
+  ""stopLoss"": <max 0.75% below entry>,
   ""riskReward"": ""1:X.X"",
-  ""expectedProfit"": ""₹XX on {shares} shares after brokerage"",
+  ""expectedProfit"": ""₹XX on {shares} shares after ₹{brokerage:F0} brokerage"",
   ""timeHorizon"": ""Exit by HH:MM"",
-  ""summary"": ""One clear sentence why to trade or avoid"",
-  ""keyDrivers"": [""reason 1"", ""reason 2"", ""reason 3""],
+  ""summary"": ""One sentence: market context + stock signal + decision"",
+  ""keyDrivers"": [""driver 1"", ""driver 2"", ""driver 3""],
   ""risks"": [""risk 1"", ""risk 2""],
+  ""marketView"": ""Bullish"" or ""Bearish"" or ""Neutral"",
   ""technicalView"": ""Bullish"" or ""Bearish"" or ""Neutral"",
   ""fundamentalView"": ""Strong"" or ""Average"" or ""Weak"",
-  ""newsView"": ""Positive"" or ""Negative"" or ""Neutral""
+  ""newsView"": ""Positive"" or ""Negative"" or ""Neutral"",
+  ""sectorView"": ""Strong"" or ""Weak"" or ""Neutral""
 }}";
 
                 var payload = new
                 {
                     model = "claude-sonnet-4-20250514",
-                    max_tokens = 800,
+                    max_tokens = 1000,
                     messages = new[]
                     {
                         new { role = "user", content = prompt }
@@ -161,7 +244,7 @@ Respond ONLY in this exact JSON. No markdown, no extra text:
 
                 var analysis = JsonConvert
                     .DeserializeObject<AiAnalysis>(clean)
-                    ?? FallbackAnalysis(stock, tech, score, shares);
+                    ?? FallbackAnalysis(stock, tech, score, shares, mktCtx);
 
                 analysis.Symbol = stock.Symbol;
                 analysis.GeneratedAt = DateTime.Now;
@@ -169,12 +252,16 @@ Respond ONLY in this exact JSON. No markdown, no extra text:
                 _cache[stock.Symbol] = analysis;
 
                 _logger.LogInformation(
-                    "✅ AI {sym}: {rec} conf:{conf}% — {summary}",
-                    stock.Symbol,
-                    analysis.Recommendation,
+                    "✅ AI {sym}: {rec} conf:{conf}% | " +
+                    "VIX:{vix:F1} FII:₹{fii:N0}Cr Nifty:{trend} | {summary}",
+                    stock.Symbol, analysis.Recommendation,
                     analysis.Confidence,
-                    analysis.Summary?.Length > 60
-                        ? analysis.Summary[..60] + "..."
+                    mktCtx.IndiaVix, mktCtx.FiiNetCrore,
+                    mktCtx.NiftyChange >= 0
+                        ? $"+{mktCtx.NiftyChange:F1}%"
+                        : $"{mktCtx.NiftyChange:F1}%",
+                    analysis.Summary?.Length > 80
+                        ? analysis.Summary[..80] + "..."
                         : analysis.Summary);
 
                 return analysis;
@@ -185,28 +272,35 @@ Respond ONLY in this exact JSON. No markdown, no extra text:
                 int shares = stock.LastPrice > 0
                     ? (int)(_config.GetValue<double>("Trading:Capital", 1500)
                         * 0.60 / stock.LastPrice) : 0;
-                return FallbackAnalysis(stock, tech, score, shares);
+                return FallbackAnalysis(stock, tech, score, shares, null);
             }
         }
 
+        // ── Fallback when Claude API fails ────────────
         private AiAnalysis FallbackAnalysis(
-            StockInfo stock,
-            TechnicalResult tech,
-            CompositeScore score,
-            int shares)
+            StockInfo stock, TechnicalResult tech,
+            CompositeScore score, int shares,
+            MarketContext? mkt)
         {
-            // Conservative fallback — only BUY if all 3 main signals align
-            bool strongBuy = tech.SupertrendBullish
+            // Conservative: require ALL 3 main signals
+            bool marketOk = mkt == null || mkt.MarketQualityScore >= 45;
+            bool vixOk = mkt == null || mkt.IndiaVix < 20;
+
+            bool strongBuy = marketOk && vixOk
+                && tech.SupertrendBullish
                 && stock.LastPrice > tech.VWAP
-                && tech.RSI > 55 && tech.RSI < 75
-                && tech.ADX > 22
+                && tech.RSI > 55 && tech.RSI < 72
+                && tech.ADX > 18
                 && tech.Score >= 65;
 
             string rec = strongBuy ? "BUY" : "AVOID";
-
             double brokerage = 40.0;
             double grossProfit = shares * (tech.SuggestedTarget - stock.LastPrice);
             double netProfit = grossProfit - brokerage;
+
+            string marketNote = mkt != null
+                ? $" | Market:{mkt.MarketQualityScore}/100 VIX:{mkt.IndiaVix:F1}"
+                : "";
 
             return new AiAnalysis
             {
@@ -214,17 +308,18 @@ Respond ONLY in this exact JSON. No markdown, no extra text:
                 Recommendation = rec,
                 Confidence = strongBuy ? 68 : 55,
                 Entry = stock.LastPrice,
-                Target = tech.SuggestedTarget,
-                StopLoss = tech.SuggestedStopLoss,
-                RiskReward = tech.SuggestedStopLoss > 0 &&
-                    (stock.LastPrice - tech.SuggestedStopLoss) > 0
-                    ? $"1:{((tech.SuggestedTarget - stock.LastPrice) / (stock.LastPrice - tech.SuggestedStopLoss)):F1}"
-                    : "N/A",
-                ExpectedProfit = $"₹{netProfit:F0} on {shares} shares (after ₹{brokerage:F0} brokerage)",
+                Target = tech.SuggestedTarget > stock.LastPrice
+                    ? tech.SuggestedTarget
+                    : stock.LastPrice * 1.003,
+                StopLoss = tech.SuggestedStopLoss < stock.LastPrice
+                    ? tech.SuggestedStopLoss
+                    : stock.LastPrice * 0.9975,
+                RiskReward = "1:1.5",
+                ExpectedProfit = $"₹{netProfit:F0} on {shares} shares",
                 TimeHorizon = "Exit by 14:00",
                 Summary = rec == "BUY"
-                    ? $"{stock.Symbol}: VWAP+Supertrend+RSI all bullish — momentum trade"
-                    : $"{stock.Symbol}: Mixed signals — skip today",
+                    ? $"{stock.Symbol}: Technical + market aligned{marketNote}"
+                    : $"{stock.Symbol}: Weak signals or bad market{marketNote}",
                 KeyDrivers = tech.Signals
                     .Where(s => s.IsBullish == true)
                     .Take(3).Select(s => s.Signal).ToList(),

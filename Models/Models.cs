@@ -131,6 +131,9 @@
         public string FundamentalView { get; set; } = "";
         public string NewsView { get; set; } = "";
         public DateTime GeneratedAt { get; set; } = DateTime.Now;
+        public string MarketView { get; set; } = "";
+        public string SectorView { get; set; } = "";
+
     }
 
     // ── Final Recommendation ────────────────────────

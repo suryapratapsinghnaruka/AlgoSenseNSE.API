@@ -76,8 +76,8 @@ namespace AlgoSenseNSE.API.Services
 
             // ── Market close reminder (3:10 PM) ──────
             if (!_marketCloseAlertSent &&
-                ist.Hour == 15 && ist.Minute >= 10 &&
-                IsWeekday(ist))
+    ist.Hour == 15 && ist.Minute >= 5 &&
+    IsWeekday(ist))
             {
                 _marketCloseAlertSent = true;
                 _marketOpenAlertSent = false;
@@ -136,7 +136,7 @@ namespace AlgoSenseNSE.API.Services
             double minScore = 68.0;
 
             // ── Process each recommendation ───────────
-            foreach (var rec in recommendations.Take(3))
+            foreach (var rec in recommendations.Take(5))
             {
                 if (_alertsToday >= maxAlerts) break;
 
@@ -147,27 +147,60 @@ namespace AlgoSenseNSE.API.Services
 
                 // ── Quality filters ───────────────────
                 // 1. Must be BUY
-                if (ai?.Recommendation != "BUY") continue;
+                if (ai?.Recommendation != "BUY")
+                {
+                    _logger.LogDebug("⏭ {sym} skipped: AI={rec}", symbol, ai?.Recommendation);
+                    continue;
+                }
 
                 // 2. Minimum composite score
-                if (score.FinalScore < minScore) continue;
+                if (score.FinalScore < minScore)
+                {
+                    _logger.LogInformation("⏭ {sym} skipped: Score={s} < {min}",
+        symbol, score.FinalScore, minScore);
+                    continue;
+                }
 
                 // 3. Minimum AI confidence
-                if (ai.Confidence < minConfidence) continue;
+                if (ai.Confidence < minConfidence)
+                {
+                    _logger.LogInformation("⏭ {sym} skipped: Confidence={c}% < {min}%",
+        symbol, ai.Confidence, minConfidence);
+                    continue;
+                }
 
                 // 4. Supertrend must be bullish
-                if (!tech.SupertrendBullish) continue;
+                if (!tech.SupertrendBullish)
+                {
+                    _logger.LogInformation("⏭ {sym} skipped: Supertrend=SELL", symbol);
+                    continue;
+                }
 
                 // 5. Price must be above VWAP
                 if (rec.Stock.LastPrice <= 0 ||
                     tech.VWAP <= 0 ||
-                    rec.Stock.LastPrice < tech.VWAP) continue;
+                    rec.Stock.LastPrice < tech.VWAP)
+                {
+                    _logger.LogInformation("⏭ {sym} skipped: Price ₹{p} below VWAP ₹{v}",
+        symbol, rec.Stock.LastPrice, tech.VWAP);
+                    continue; 
+                }
 
                 // 6. ADX must show trend strength
-                if (tech.ADX < 20) continue;
+                if (tech.ADX < 20)
+                {
+                    _logger.LogInformation("⏭ {sym} skipped: ADX={adx} < 15",
+        symbol, tech.ADX);
+                    continue;
+                }
 
                 // 7. RSI must be in buy zone (45-75)
-                if (tech.RSI < 45 || tech.RSI > 75) continue;
+                if (tech.RSI < 45 || tech.RSI > 75)
+                {
+                    _logger.LogInformation("⏭ {sym} skipped: RSI={rsi} out of 45-75 range",
+        symbol, tech.RSI);
+                    continue;
+                }
 
                 // ── Risk check ────────────────────────
                 if (!_risk.CanTrade(out var riskReason))
