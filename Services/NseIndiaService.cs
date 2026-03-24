@@ -475,6 +475,7 @@ namespace AlgoSenseNSE.API.Services
     public class SectorPerformance
     {
         public string SectorName { get; set; } = "";
+
         public double ChangePercent { get; set; }
         public bool IsPositive { get; set; }
     }
