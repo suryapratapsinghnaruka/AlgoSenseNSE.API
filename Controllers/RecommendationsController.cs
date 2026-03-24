@@ -4,30 +4,39 @@ using Microsoft.AspNetCore.Mvc;
 namespace AlgoSenseNSE.API.Controllers
 {
     [ApiController]
-    [Route("api/[controller]")]
+    [Route("api/recommendations")]
     public class RecommendationsController : ControllerBase
     {
         private readonly MarketScanService _scanner;
         private readonly AlertEngine _alertEngine;
-        private readonly RiskManager _riskManager;
+        private readonly RiskManager _risk;
+        private readonly NseIndiaService _nse;
+        private readonly ILogger<RecommendationsController> _logger;
 
         public RecommendationsController(
             MarketScanService scanner,
             AlertEngine alertEngine,
-            RiskManager riskManager)
+            RiskManager risk,
+            NseIndiaService nse,
+            ILogger<RecommendationsController> logger)
         {
             _scanner = scanner;
             _alertEngine = alertEngine;
-            _riskManager = riskManager;
+            _risk = risk;
+            _nse = nse;
+            _logger = logger;
         }
 
-        // GET api/recommendations
+        // ── GET /api/recommendations ─────────────────
         [HttpGet]
-        public IActionResult Get()
+        public async Task<IActionResult> Get()
         {
             var recs = _scanner.GetRecommendations();
-            var risk = _riskManager.GetSummary();
-            var alerts = _alertEngine.GetAlertHistory();
+            var risk = _risk.GetSummary();
+
+            // Try to get market context for display
+            MarketContext? mktCtx = null;
+            try { mktCtx = await _nse.GetMarketContextAsync(); } catch { }
 
             return Ok(new
             {
@@ -36,40 +45,76 @@ namespace AlgoSenseNSE.API.Controllers
                 recommendations = recs,
                 riskSummary = risk,
                 alertsToday = _alertEngine.GetAlertsToday(),
-                recentAlerts = alerts.TakeLast(5)
+                recentAlerts = _alertEngine.GetAlertHistory()
+                    .TakeLast(10).ToList(),
+                marketContext = mktCtx != null ? new
+                {
+                    niftyLtp = mktCtx.NiftyLtp,
+                    niftyChange = mktCtx.NiftyChange,
+                    niftyTrend = mktCtx.NiftyTrend,
+                    indiaVix = mktCtx.IndiaVix,
+                    vixSignal = mktCtx.VixInterpretation,
+                    fiiNet = mktCtx.FiiNetCrore,
+                    fiiSentiment = mktCtx.FiiSentiment,
+                    marketQuality = mktCtx.MarketQualityScore,
+                    qualityLabel = mktCtx.MarketQualityLabel,
+                    topSectors = mktCtx.TopSectors,
+                    weakSectors = mktCtx.WeakSectors
+                } : null,
+                // Locked picks info
+                //picksLocked = _scanner.PicksLockedToday,
+                //lockedAt = _scanner.LockedAt
             });
         }
 
-        // POST api/recommendations/refresh
+        // ── POST /api/recommendations/refresh ────────
+        // Force refresh — useful for manual testing
         [HttpPost("refresh")]
         public async Task<IActionResult> Refresh()
         {
+            _logger.LogInformation("🔄 Manual recommendation refresh...");
+
+            var tier1 = _scanner.GetTier1Symbols();
+            await _scanner.RefreshIntradaySignalsAsync(
+                tier1.Take(30).ToList());
             await _scanner.RefreshRecommendationsAsync();
+
+            var recs = _scanner.GetRecommendations();
+
             return Ok(new
             {
-                recommendations = _scanner.GetRecommendations(),
+                message = $"✅ Refreshed {recs.Count} recommendations",
+                recommendations = recs,
                 refreshedAt = DateTime.Now
             });
         }
 
-        // GET api/recommendations/summary
-        [HttpGet("summary")]
-        public IActionResult GetSummary()
+        // ── GET /api/recommendations/locked ──────────
+        // Returns today's locked morning picks
+        [HttpGet("locked")]
+        public IActionResult GetLocked()
         {
-            var recs = _scanner.GetRecommendations();
-            var risk = _riskManager.GetSummary();
-
+            var locked = _scanner.GetLockedPicks();
             return Ok(new
             {
-                totalSignals = _alertEngine.GetAlertsToday(),
-                dailyPnL = _alertEngine.GetDailyPnL(),
-                capitalUsed = risk.TotalCapital - risk.AvailableCapital,
-                capitalAvail = risk.AvailableCapital,
-                tradingHalted = risk.TradingHalted,
-                topPick = recs.FirstOrDefault()?.Stock.Symbol ?? "Scanning...",
-                marketBias = recs.Count(r =>
-                    r.AiAnalysis?.Recommendation == "BUY") > 1
-                    ? "BULLISH" : "NEUTRAL"
+                locked = locked,
+                lockedAt = _scanner.LockedAt,
+                isLocked = _scanner.PicksLockedToday,
+                count = locked.Count
+            });
+        }
+
+        // ── GET /api/recommendations/triggers ────────
+        // Returns entry triggers for locked picks
+        [HttpGet("triggers")]
+        public IActionResult GetTriggers()
+        {
+            var triggers = _scanner.GetEntryTriggers();
+            return Ok(new
+            {
+                triggers,
+                count = triggers.Count,
+                checkedAt = DateTime.Now
             });
         }
     }

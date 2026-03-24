@@ -18,8 +18,10 @@ namespace AlgoSenseNSE.API.Services
         private string _jwtToken = "";
         private string _apiKey = "";
         private string _feedToken = "";
+        private string _clientId = "";
         private string _refreshToken = "";
         private DateTime _tokenExpiry = DateTime.MinValue;
+        private AngelOneWebSocketService? _wsService;
 
         private const string BaseUrl = "https://apiconnect.angelone.in";
 
@@ -38,7 +40,9 @@ namespace AlgoSenseNSE.API.Services
             _httpClientFactory = httpClientFactory;
             _http = httpClientFactory.CreateClient("AngelOne");
             _apiKey = _config["AngelOne:ApiKey"] ?? "";
+            _clientId = _config["AngelOne:ClientId"] ?? "";
         }
+        public void SetWebSocketService(AngelOneWebSocketService ws) => _wsService = ws;
 
         // ── Rate throttle ─────────────────────────────
         private async Task ThrottleAsync()
@@ -107,6 +111,9 @@ namespace AlgoSenseNSE.API.Services
                     _refreshToken = result["data"]?["refreshToken"]?.Value<string>() ?? "";
                     _tokenExpiry = DateTime.Now.AddHours(6);
                     _logger.LogInformation("✅ Angel One login successful");
+
+                    if (_wsService != null && !string.IsNullOrEmpty(_feedToken))
+                        _wsService.SetCredentials(_jwtToken, _feedToken, _clientId);
                     return true;
                 }
 
@@ -557,6 +564,7 @@ namespace AlgoSenseNSE.API.Services
 
         public string GetFeedToken() => _feedToken;
         public string GetJwtToken() => _jwtToken;
+        public string GetClientId() => _clientId;
     }
 
     // ── Instrument token model for streaming parse ──

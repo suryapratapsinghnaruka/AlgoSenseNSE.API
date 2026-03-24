@@ -5,213 +5,240 @@ using Microsoft.AspNetCore.Mvc;
 namespace AlgoSenseNSE.API.Controllers
 {
     [ApiController]
-    [Route("api/[controller]")]
+    [Route("api/stocks")]
     public class StocksController : ControllerBase
     {
         private readonly MarketScanService _scanner;
-        private readonly ClaudeAiService _ai;
+        private readonly AngelOneService _angel;
+        private readonly TechnicalAnalysisService _technical;
+        private readonly FundamentalService _fundamental;
         private readonly NewsService _news;
-        private readonly AngelOneService _angelOne;
-        private readonly AlertEngine _alertEngine;
-        private readonly RiskManager _riskManager;
+        private readonly ClaudeAiService _ai;
+        private readonly ScoringEngine _scoring;
+        private readonly NseIndiaService _nse;
+        private readonly AngelOneWebSocketService _ws;
+        private readonly StockScreenerService _screener;
+        private readonly ILogger<StocksController> _logger;
 
         public StocksController(
             MarketScanService scanner,
-            ClaudeAiService ai,
+            AngelOneService angel,
+            TechnicalAnalysisService technical,
+            FundamentalService fundamental,
             NewsService news,
-            AngelOneService angelOne,
-            AlertEngine alertEngine,
-            RiskManager riskManager)
+            ClaudeAiService ai,
+            ScoringEngine scoring,
+            NseIndiaService nse,
+            AngelOneWebSocketService ws,
+            StockScreenerService screener,
+            ILogger<StocksController> logger)
         {
             _scanner = scanner;
-            _ai = ai;
+            _angel = angel;
+            _technical = technical;
+            _fundamental = fundamental;
             _news = news;
-            _angelOne = angelOne;
-            _alertEngine = alertEngine;
-            _riskManager = riskManager;
+            _ai = ai;
+            _scoring = scoring;
+            _nse = nse;
+            _ws = ws;
+            _screener = screener;
+            _logger = logger;
         }
 
-        // GET api/stocks
+        // ── GET /api/stocks ──────────────────────────
+        // All tracked stocks with scores for the screener table
         [HttpGet]
-        public IActionResult GetAll()
+        public IActionResult GetAllStocks()
         {
-            var scores = _scanner.GetAllScores();
-            var prices = _scanner.GetLivePrices()
-                .ToDictionary(p => p.Symbol);
+            var allScores = _scanner.GetAllScores();
+            var result = allScores.Select(kv =>
+            {
+                var sym = kv.Key;
+                var sc = kv.Value;
+                var lp = _scanner.GetLivePrice(sym);
+                var tech = _scanner.GetTechnical(sym);
+                var fund = _scanner.GetFundamental(sym);
 
-            var result = scores
-                .Select(s =>
+                return new
                 {
-                    var lp = prices.GetValueOrDefault(s.Key);
-                    return new
-                    {
-                        symbol = s.Key,
-                        price = lp?.LTP ?? 0,
-                        changePercent = lp?.ChangePercent ?? 0,
-                        high = lp?.High ?? 0,
-                        low = lp?.Low ?? 0,
-                        volume = lp?.Volume ?? 0,
-                        compositeScore = s.Value.FinalScore,
-                        technicalScore = s.Value.TechnicalScore,
-                        fundamentalScore = s.Value.FundamentalScore,
-                        newsScore = s.Value.NewsScore,
-                        recommendation = new ScoringEngine()
-                            .GetRecommendation(s.Value.FinalScore),
-                        updatedAt = s.Value.CalculatedAt
-                    };
-                })
-                .OrderByDescending(s => s.compositeScore)
-                .ToList();
+                    symbol = sym,
+                    price = lp?.LTP ?? 0,
+                    changePercent = lp?.ChangePercent ?? 0,
+                    volume = lp?.Volume ?? 0,
+                    high = lp?.High ?? 0,
+                    low = lp?.Low ?? 0,
+                    //sector = fund?.Sector ?? "",
+                    compositeScore = sc.FinalScore,
+                    technicalScore = sc.TechnicalScore,
+                    fundamentalScore = sc.FundamentalScore,
+                    newsScore = sc.NewsScore,
+                    recommendation = sc.FinalScore >= 68 ? "BUY"
+                                   : sc.FinalScore >= 50 ? "HOLD" : "AVOID",
+                    supertrend = tech?.SupertrendBullish == true ? "BUY" : "SELL",
+                    rsi = tech?.RSI ?? 0,
+                    vwap = tech?.VWAP ?? 0,
+                    adx = tech?.ADX ?? 0
+                };
+            })
+            .OrderByDescending(s => s.compositeScore)
+            .ToList();
 
             return Ok(result);
         }
 
-        // GET api/stocks/{symbol}
-        [HttpGet("{symbol}")]
-        public IActionResult GetStock(string symbol)
-        {
-            symbol = symbol.ToUpper();
-            var tech = _scanner.GetTechnical(symbol);
-            var fund = _scanner.GetFundamental(symbol);
-            var score = _scanner.GetScore(symbol);
-            var price = _scanner.GetLivePrice(symbol);
-            var news = _news.GetNewsForSymbol(symbol);
-
-            // Risk calculation for this stock
-            PositionSize? posSize = null;
-            if (price != null && tech != null && price.LTP > 0)
-            {
-                posSize = _riskManager.Calculate(
-                    symbol,
-                    price.LTP,
-                    tech.SuggestedStopLoss);
-            }
-
-            return Ok(new
-            {
-                price,
-                technical = tech,
-                fundamental = fund,
-                score,
-                news,
-                positionSize = posSize
-            });
-        }
-
-        // GET api/stocks/tiers
-        [HttpGet("tiers")]
-        public IActionResult GetTiers()
-        {
-            return Ok(new
-            {
-                tier1Count = _scanner.GetTier1Symbols().Count,
-                tier2Count = _scanner.GetTier2Symbols().Count,
-                totalTracked = _scanner.GetAllSymbols().Count,
-                tier1 = _scanner.GetTier1Symbols(),
-                tier2 = _scanner.GetTier2Symbols().Take(50)
-            });
-        }
-
-        // GET api/stocks/indices
+        // ── GET /api/stocks/indices ──────────────────
+        // Nifty + Sensex for initial page load
         [HttpGet("indices")]
         public async Task<IActionResult> GetIndices()
         {
-            var nifty = await _angelOne.GetLiveIndexAsync("NSE", "26000");
-            var sensex = await _angelOne.GetLiveIndexAsync("BSE", "1");
+            var nifty = await _angel.GetLiveIndexAsync("NSE", "26000");
+            var sensex = await _angel.GetLiveIndexAsync("BSE", "1");
             return Ok(new { nifty, sensex });
         }
 
-        // GET api/stocks/{symbol}/ohlcv
-        [HttpGet("{symbol}/ohlcv")]
-        public async Task<IActionResult> GetOhlcv(
-            string symbol,
-            [FromQuery] string interval = "FIVE_MINUTE",
-            [FromQuery] int days = 5)
+        // ── GET /api/stocks/tiers ────────────────────
+        // Tier1 + Tier2 counts for dashboard
+        [HttpGet("tiers")]
+        public IActionResult GetTiers()
+        {
+            var tier1 = _scanner.GetTier1Symbols();
+            var allSym = _scanner.GetAllSymbols();
+            return Ok(new
+            {
+                tier1Count = tier1.Count,
+                totalTracked = allSym.Count,
+                wsConnected = _ws.IsConnected,
+                wsTicks = _ws.TickCount,
+                screenerCount = _screener.CandidateCount
+            });
+        }
+
+        // ── GET /api/stocks/{symbol} ─────────────────
+        // Full stock detail for analysis page
+        [HttpGet("{symbol}")]
+        public async Task<IActionResult> GetStock(string symbol)
         {
             symbol = symbol.ToUpper();
 
-            // Try to get token from scanner
-            var allSymbols = _scanner.GetAllSymbols();
-            // We need the token map — get it via a workaround
-            // by attempting OHLCV fetch using known symbol
-            var tier1 = _scanner.GetTier1Symbols();
-            var tier2 = _scanner.GetTier2Symbols();
-
-            // Return cached technical data for chart
+            var lp = _scanner.GetLivePrice(symbol);
             var tech = _scanner.GetTechnical(symbol);
-            if (tech == null)
-                return Ok(new List<object>());
+            var fund = _scanner.GetFundamental(symbol);
+            var sc = _scanner.GetScore(symbol);
+            var nws = _news.GetNewsForSymbol(symbol);
 
-            // Return basic price data we have
-            var price = _scanner.GetLivePrice(symbol);
-            if (price == null)
-                return Ok(new List<object>());
-
-            // Return synthetic candle from live price for chart display
-            var now = DateTime.Now;
-            var candles = new List<object>
+            return Ok(new
             {
-                new {
-                    timestamp = now.AddMinutes(-5),
-                    open  = price.LTP - (price.Change * 0.3),
-                    high  = price.High,
-                    low   = price.Low,
-                    close = price.LTP,
-                    volume = price.Volume
-                }
-            };
+                symbol,
+                price = new
+                {
+                    ltp = lp?.LTP ?? 0,
+                    changePercent = lp?.ChangePercent ?? 0,
+                    high = lp?.High ?? 0,
+                    low = lp?.Low ?? 0,
+                    volume = lp?.Volume ?? 0,
+                    updatedAt = lp?.UpdatedAt
+                },
+                technical = tech,
+                fundamental = fund,
+                score = sc ?? new CompositeScore { Symbol = symbol, FinalScore = 50 },
+                news = nws.Take(10)
+            });
+        }
+
+        // ── GET /api/stocks/{symbol}/ohlcv ───────────
+        // 5-min candles for TradingView chart
+        [HttpGet("{symbol}/ohlcv")]
+        public async Task<IActionResult> GetOhlcv(
+            string symbol,
+            [FromQuery] int days = 5)
+        {
+            symbol = symbol.ToUpper();
+            var tokens = await _angel.GetSymbolTokenMapAsync(new List<string>());
+
+            if (!tokens.TryGetValue(symbol, out var token))
+                return NotFound(new { message = $"Token not found for {symbol}" });
+
+            var candles = await _angel.GetOhlcvAsync(
+                symbol, token, "FIVE_MINUTE", days);
 
             return Ok(candles);
         }
 
-        // POST api/stocks/{symbol}/analyze
+        // ── POST /api/stocks/{symbol}/analyze ────────
+        // Trigger fresh Claude AI analysis for a stock
         [HttpPost("{symbol}/analyze")]
         public async Task<IActionResult> AnalyzeStock(string symbol)
         {
             symbol = symbol.ToUpper();
 
-            var price = _scanner.GetLivePrice(symbol);
+            var lp = _scanner.GetLivePrice(symbol);
+            var tech = _scanner.GetTechnical(symbol);
+            var fund = _scanner.GetFundamental(symbol);
+            var sc = _scanner.GetScore(symbol);
+            var nws = _news.GetNewsForSymbol(symbol);
+
+            if (lp == null || tech == null)
+                return NotFound(new { message = $"No data for {symbol}. Run a scan first." });
+
             var stock = new StockInfo
             {
                 Symbol = symbol,
-                LastPrice = price?.LTP ?? 0,
-                ChangePercent = price?.ChangePercent ?? 0,
-                Volume = price?.Volume ?? 0,
-                High = price?.High ?? 0,
-                Low = price?.Low ?? 0
+                LastPrice = lp.LTP,
+                Change = lp.Change,
+                ChangePercent = lp.ChangePercent,
+                High = lp.High,
+                Low = lp.Low,
+                Volume = lp.Volume
             };
 
-            var tech = _scanner.GetTechnical(symbol)
-                     ?? new TechnicalResult { Symbol = symbol };
-            var fund = _scanner.GetFundamental(symbol)
-                     ?? new FundamentalResult { Symbol = symbol };
-            var score = _scanner.GetScore(symbol)
-                     ?? new CompositeScore { Symbol = symbol };
-            var news = _news.GetNewsForSymbol(symbol);
-
+            _ai.ClearCache(symbol);
             var analysis = await _ai.AnalyzeStockAsync(
-                stock, tech, fund, news, score);
+                stock, tech,
+                fund ?? new FundamentalResult { Symbol = symbol },
+                nws,
+                sc ?? new CompositeScore { Symbol = symbol, FinalScore = 50 });
 
             return Ok(analysis);
         }
 
-        // GET api/stocks/alerts
-        [HttpGet("alerts")]
-        public IActionResult GetAlerts()
+        // ── GET /api/stocks/screener ─────────────────
+        // Dynamic screener candidates from WebSocket
+        [HttpGet("screener")]
+        public IActionResult GetScreener(
+            [FromQuery] int limit = 50)
         {
-            return Ok(new
-            {
-                alerts = _alertEngine.GetAlertHistory(),
-                alertsToday = _alertEngine.GetAlertsToday(),
-                dailyPnl = _alertEngine.GetDailyPnL()
-            });
+            var candidates = _screener.GetCandidates()
+                .Take(limit)
+                .Select(s => new
+                {
+                    s.Symbol,
+                    s.Price,
+                    s.ChangePercent,
+                    s.Volume,
+                    s.High,
+                    s.Low,
+                    s.MomentumScore,
+                    s.AffordableShares
+                });
+            return Ok(candidates);
         }
 
-        // GET api/stocks/risk
-        [HttpGet("risk")]
-        public IActionResult GetRisk()
+        // ── GET /api/stocks/gainers ──────────────────
+        // Top gainers from WebSocket screener
+        [HttpGet("gainers")]
+        public IActionResult GetGainers([FromQuery] int limit = 20)
         {
-            return Ok(_riskManager.GetSummary());
+            var gainers = _screener.GetTopGainers(limit)
+                .Select(s => new
+                {
+                    s.Symbol,
+                    s.Price,
+                    s.ChangePercent,
+                    s.Volume,
+                    s.MomentumScore
+                });
+            return Ok(gainers);
         }
     }
 }

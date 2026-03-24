@@ -6,23 +6,17 @@ Console.OutputEncoding = System.Text.Encoding.UTF8;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// ── Port ──────────────────────────────────────────
-//var port = Environment.GetEnvironmentVariable("PORT") ?? "5150";
-//builder.WebHost.UseUrls($"http://0.0.0.0:{port}");
-
 // ── Directories ───────────────────────────────────
 foreach (var dir in new[] { "/app/data", "/app/logs", "logs", "data" })
     try { Directory.CreateDirectory(dir); } catch { }
 
-// ── Logging — console + file ──────────────────────
+// ── Logging ───────────────────────────────────────
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
 builder.Logging.AddProvider(new FileLoggerProvider());
 builder.Logging.SetMinimumLevel(LogLevel.Information);
-// Suppress noisy HTTP client logs
 builder.Logging.AddFilter("System.Net.Http.HttpClient", LogLevel.Warning);
 builder.Logging.AddFilter("Microsoft.AspNetCore", LogLevel.Warning);
-builder.Logging.AddFilter("Microsoft.EntityFramework", LogLevel.Warning);
 
 // ── Services ──────────────────────────────────────
 builder.Services.AddControllers();
@@ -62,22 +56,40 @@ builder.Services.AddHttpClient("Claude", c =>
 builder.Services.AddHttpClient("Telegram", c =>
     c.Timeout = TimeSpan.FromSeconds(10));
 
-// App Services
-builder.Services.AddSingleton<AngelOneService>();
+// ── Core Services ─────────────────────────────────
+// WebSocket first — AngelOne needs it during login
+builder.Services.AddSingleton<AngelOneWebSocketService>();
+builder.Services.AddSingleton<StockScreenerService>();
+builder.Services.AddSingleton<AngelOneService>(sp =>
+{
+    var svc = new AngelOneService(
+        sp.GetRequiredService<IConfiguration>(),
+        sp.GetRequiredService<ILogger<AngelOneService>>(),
+        sp.GetRequiredService<IHttpClientFactory>());
+
+    // Wire WebSocket service into AngelOne
+    var ws = sp.GetRequiredService<AngelOneWebSocketService>();
+    svc.SetWebSocketService(ws);
+    return svc;
+});
+
 builder.Services.AddSingleton<TechnicalAnalysisService>();
 builder.Services.AddSingleton<FundamentalService>();
 builder.Services.AddSingleton<NewsService>();
 builder.Services.AddSingleton<ScoringEngine>();
+builder.Services.AddSingleton<NseIndiaService>();
 builder.Services.AddSingleton<ClaudeAiService>();
+builder.Services.AddSingleton<SignalTrackingService>();
 builder.Services.AddSingleton<MarketScanService>();
 builder.Services.AddSingleton<TelegramService>();
 builder.Services.AddSingleton<RiskManager>(sp =>
     new RiskManager(
         sp.GetRequiredService<ILogger<RiskManager>>(),
-        capital: builder.Configuration.GetValue<double>("Trading:Capital", 1500)));
+        capital: builder.Configuration
+            .GetValue<double>("Trading:Capital", 1500)));
 builder.Services.AddSingleton<AlertEngine>();
 
-// Background Workers
+// ── Background Workers ────────────────────────────
 builder.Services.AddHostedService<PriceFeedWorker>();
 builder.Services.AddHostedService<NewsPipelineWorker>();
 builder.Services.AddHostedService<DailyScanWorker>();
@@ -94,9 +106,9 @@ app.UseAuthorization();
 app.MapControllers();
 app.MapHub<MarketHub>("/hubs/market");
 
-// ── Standard endpoints ────────────────────────────
 app.MapGet("/", () => Results.Redirect("/index.html"));
 
+// ── Test endpoints ────────────────────────────────
 app.MapGet("/api/test-telegram", async (TelegramService tg) =>
 {
     await tg.SendTestAlertAsync();
@@ -109,23 +121,35 @@ app.MapGet("/api/alerts", (AlertEngine ae) =>
 app.MapGet("/api/risk", (RiskManager rm) =>
     Results.Ok(rm.GetSummary()));
 
-// ── LOG VIEWER — so I can confirm everything works ─
-// GET /api/logs          → last 200 lines of today's log
-// GET /api/logs/signals  → only signal/indicator lines
-// GET /api/logs/errors   → only errors
+// ── WebSocket status ──────────────────────────────
+app.MapGet("/api/websocket/status",
+    (AngelOneWebSocketService ws, StockScreenerService screener) =>
+    Results.Ok(new
+    {
+        connected = ws.IsConnected,
+        tickCount = ws.TickCount,
+        candidates = screener.CandidateCount,
+        topGainers = screener.GetTopGainers(5)
+            .Select(s => new { s.Symbol, s.Price, s.ChangePercent })
+    }));
+
+// ── Signal tracking endpoints ─────────────────────
+app.MapGet("/api/signals/stats",
+    async (SignalTrackingService st) =>
+    Results.Ok(await st.GetAccuracyStatsAsync(30)));
+
+app.MapGet("/api/signals/export",
+    async (SignalTrackingService st) =>
+    Results.Ok(await st.ExportTrainingDataAsync()));
+
+// ── Log viewer endpoints ──────────────────────────
 app.MapGet("/api/logs", () =>
 {
     var file = GetLogFile();
     if (file == null)
         return Results.Ok(new { message = "No log file yet" });
-
     var lines = File.ReadAllLines(file).TakeLast(200).ToArray();
-    return Results.Ok(new
-    {
-        logFile = file,
-        lines = lines.Length,
-        logs = lines
-    });
+    return Results.Ok(new { logFile = file, lines = lines.Length, logs = lines });
 });
 
 app.MapGet("/api/logs/signals", () =>
@@ -133,32 +157,19 @@ app.MapGet("/api/logs/signals", () =>
     var file = GetLogFile();
     if (file == null)
         return Results.Ok(new { message = "No log file yet" });
-
-    // Key trading keywords to look for
     var keywords = new[]
     {
-        "Intraday score", "Technical score", "Score=",
-        "RSI=", "VWAP=", "Supertrend",
-        "OHLCV", "candle", "5-min",
-        "BUY", "SELL", "AVOID",
-        "Picks:", "signal", "Alert",
-        "Telegram", "Claude AI", "AI ",
-        "Nifty", "Sensex",
-        "ERROR", "Error", "failed", "❌", "✅", "⚠️"
+        "OHLCV", "Score=", "RSI=", "VWAP",
+        "BUY", "AVOID", "Picks:", "Alert",
+        "Telegram", "AI ", "Nifty", "WebSocket",
+        "Screener", "Market context", "VIX",
+        "ERROR", "❌", "✅", "⚠️"
     };
-
     var lines = File.ReadAllLines(file)
         .Where(l => keywords.Any(k =>
             l.Contains(k, StringComparison.OrdinalIgnoreCase)))
-        .TakeLast(300)
-        .ToArray();
-
-    return Results.Ok(new
-    {
-        logFile = file,
-        filtered = lines.Length,
-        logs = lines
-    });
+        .TakeLast(300).ToArray();
+    return Results.Ok(new { logFile = file, filtered = lines.Length, logs = lines });
 });
 
 app.MapGet("/api/logs/errors", () =>
@@ -166,22 +177,11 @@ app.MapGet("/api/logs/errors", () =>
     var file = GetLogFile();
     if (file == null)
         return Results.Ok(new { message = "No log file yet" });
-
     var lines = File.ReadAllLines(file)
-        .Where(l => l.Contains("ERROR") ||
-                    l.Contains("Error") ||
-                    l.Contains("failed") ||
-                    l.Contains("❌") ||
+        .Where(l => l.Contains("ERROR") || l.Contains("❌") ||
                     l.Contains("Exception"))
-        .TakeLast(100)
-        .ToArray();
-
-    return Results.Ok(new
-    {
-        logFile = file,
-        errors = lines.Length,
-        logs = lines
-    });
+        .TakeLast(100).ToArray();
+    return Results.Ok(new { logFile = file, errors = lines.Length, logs = lines });
 });
 
 app.MapGet("/api/logs/ohlcv", () =>
@@ -189,35 +189,16 @@ app.MapGet("/api/logs/ohlcv", () =>
     var file = GetLogFile();
     if (file == null)
         return Results.Ok(new { message = "No log file yet" });
-
-    // Specifically for confirming OHLCV + indicators work
     var lines = File.ReadAllLines(file)
-        .Where(l => l.Contains("OHLCV") ||
-                    l.Contains("candle") ||
-                    l.Contains("5-min") ||
-                    l.Contains("Intraday score") ||
-                    l.Contains("Score=") ||
-                    l.Contains("RSI=") ||
-                    l.Contains("Supertrend") ||
-                    l.Contains("VWAP") ||
-                    l.Contains("MACD") ||
-                    l.Contains("Refreshing") ||
+        .Where(l => l.Contains("OHLCV") || l.Contains("Score=") ||
+                    l.Contains("RSI=") || l.Contains("Supertrend") ||
                     l.Contains("signals updated"))
-        .TakeLast(200)
-        .ToArray();
-
-    return Results.Ok(new
-    {
-        logFile = file,
-        description = "OHLCV + Indicator logs",
-        lines = lines.Length,
-        logs = lines
-    });
+        .TakeLast(200).ToArray();
+    return Results.Ok(new { logFile = file, logs = lines });
 });
 
 app.Run();
 
-// ── Helper: find today's log file ─────────────────
 static string? GetLogFile()
 {
     var today = DateTime.Now.ToString("yyyy-MM-dd");
@@ -231,10 +212,7 @@ static string? GetLogFile()
     return candidates.FirstOrDefault(File.Exists);
 }
 
-// ══════════════════════════════════════════════════
-// FILE LOGGER
-// Saves all app logs to /app/logs/algosense-DATE.log
-// ══════════════════════════════════════════════════
+// ── File Logger ───────────────────────────────────
 public class FileLoggerProvider : ILoggerProvider
 {
     private readonly string _logDir;
@@ -254,7 +232,6 @@ public class FileLogger : ILogger
     private readonly string _logDir;
     private static readonly object _lock = new();
 
-    // Only save our app logs + critical errors
     private static readonly string[] _allowedPrefixes =
     {
         "AlgoSenseNSE",
@@ -286,8 +263,7 @@ public class FileLogger : ILogger
         {
             LogLevel.Error => "ERROR",
             LogLevel.Warning => "WARN ",
-            LogLevel.Information => "INFO ",
-            _ => "DEBUG"
+            _ => "INFO "
         };
 
         var ts = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
@@ -304,13 +280,8 @@ public class FileLogger : ILogger
         {
             try
             {
-                // Write to today's file
                 File.AppendAllText(dayFile, line + "\n");
-
-                // Write to rolling main file
                 File.AppendAllText(mainFile, line + "\n");
-
-                // Trim main file if too large (keep last 5000 lines)
                 var all = File.ReadAllLines(mainFile);
                 if (all.Length > 6000)
                     File.WriteAllLines(mainFile, all.TakeLast(5000));

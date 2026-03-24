@@ -355,5 +355,11 @@ namespace AlgoSenseNSE.API.Services
         public List<string> GetTier2Symbols() => _tier2Symbols;
         public List<string> GetAllSymbols() => _symbolTokenMap.Keys.ToList();
         public Dictionary<string, CompositeScore> GetAllScores() => _scores;
+        // Add these properties and methods:
+        public bool PicksLockedToday => false; // Phase 2 — morning lock
+        public DateTime LockedAt => DateTime.MinValue;
+
+        public List<Recommendation> GetLockedPicks() => _recommendations;
+        public List<EntryTrigger> GetEntryTriggers() => new List<EntryTrigger>();
     }
 }

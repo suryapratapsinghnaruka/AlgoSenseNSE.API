@@ -55,6 +55,10 @@
         public double SuggestedStopLoss { get; set; }
         public List<TechnicalSignal> Signals { get; set; } = new();
         public DateTime CalculatedAt { get; set; } = DateTime.Now;
+        // Gap & trend context
+        public double GapPercent { get; set; }
+        public string GapType { get; set; } = "FLAT";
+        public string Trend15Min { get; set; } = "NEUTRAL";
     }
 
     public class TechnicalSignal
@@ -69,6 +73,7 @@
     public class FundamentalResult
     {
         public string Symbol { get; set; } = "";
+        public string Sector { get; set; } = "";
         public double Score { get; set; }
         public double PE { get; set; }
         public double PB { get; set; }
@@ -122,7 +127,7 @@
         public double Target { get; set; }
         public double StopLoss { get; set; }
         public string RiskReward { get; set; } = "";
-        public string ExpectedProfit { get; set; } = "";  // ← ADD THIS LINE
+        public string ExpectedProfit { get; set; } = "";
         public string TimeHorizon { get; set; } = "";
         public string Summary { get; set; } = "";
         public List<string> KeyDrivers { get; set; } = new();
@@ -130,6 +135,8 @@
         public string TechnicalView { get; set; } = "";
         public string FundamentalView { get; set; } = "";
         public string NewsView { get; set; } = "";
+        public string MarketView { get; set; } = "";
+        public string SectorView { get; set; } = "";
         public DateTime GeneratedAt { get; set; } = DateTime.Now;
     }
 
@@ -151,12 +158,26 @@
     {
         public string Symbol { get; set; } = "";
         public double LTP { get; set; }
+        public double Open { get; set; }
         public double Change { get; set; }
         public double ChangePercent { get; set; }
         public double High { get; set; }
         public double Low { get; set; }
         public long Volume { get; set; }
         public DateTime UpdatedAt { get; set; } = DateTime.Now;
+    }
+
+    // ── Entry Trigger ────────────────────────────────
+    public class EntryTrigger
+    {
+        public string Symbol { get; set; } = "";
+        public double CurrentPrice { get; set; }
+        public double Entry { get; set; }
+        public double Target { get; set; }
+        public double StopLoss { get; set; }
+        public int TriggerScore { get; set; }
+        public List<string> Reasons { get; set; } = new();
+        public int Confidence { get; set; }
     }
 
     // ── Angel One API Response ──────────────────────

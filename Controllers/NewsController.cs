@@ -4,41 +4,32 @@ using Microsoft.AspNetCore.Mvc;
 namespace AlgoSenseNSE.API.Controllers
 {
     [ApiController]
-    [Route("api/[controller]")]
+    [Route("api/news")]
     public class NewsController : ControllerBase
     {
         private readonly NewsService _news;
 
         public NewsController(NewsService news)
-        {
-            _news = news;
-        }
+            => _news = news;
 
-        // GET api/news
+        // ── GET /api/news ────────────────────────────
         [HttpGet]
-        public IActionResult GetAll()
+        public IActionResult GetNews(
+            [FromQuery] int limit = 50)
         {
-            return Ok(_news.GetCachedNews());
+            var items = _news.GetCachedNews()
+                .Take(limit)
+                .ToList();
+            return Ok(items);
         }
 
-        // GET api/news/{symbol}
+        // ── GET /api/news/{symbol} ───────────────────
         [HttpGet("{symbol}")]
-        public IActionResult GetForSymbol(string symbol)
+        public IActionResult GetNewsForSymbol(string symbol)
         {
-            return Ok(_news.GetNewsForSymbol(symbol.ToUpper()));
-        }
-
-        // POST api/news/refresh
-        [HttpPost("refresh")]
-        public async Task<IActionResult> Refresh()
-        {
-            var news = await _news.FetchAllNewsAsync();
-            return Ok(new
-            {
-                count = news.Count,
-                refreshedAt = DateTime.Now,
-                news = news.Take(20)
-            });
+            var items = _news.GetNewsForSymbol(
+                symbol.ToUpper());
+            return Ok(items);
         }
     }
 }
