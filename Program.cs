@@ -82,6 +82,7 @@ builder.Services.AddSingleton<ClaudeAiService>();
 builder.Services.AddSingleton<SignalTrackingService>();
 builder.Services.AddSingleton<MarketScanService>();
 builder.Services.AddSingleton<TelegramService>();
+builder.Services.AddSingleton<NseIndiaService>();
 builder.Services.AddSingleton<RiskManager>(sp =>
     new RiskManager(
         sp.GetRequiredService<ILogger<RiskManager>>(),

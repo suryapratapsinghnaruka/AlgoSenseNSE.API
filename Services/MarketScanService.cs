@@ -274,7 +274,7 @@ namespace AlgoSenseNSE.API.Services
                 var recs = new List<Recommendation>();
                 int rank = 1;
 
-                foreach (var item in ranked.Take(3))
+                foreach (var item in ranked.Take(5))
                 {
                     var sym = item.Symbol;
                     var score = item.Score;

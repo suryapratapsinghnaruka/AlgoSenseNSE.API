@@ -33,7 +33,6 @@ namespace AlgoSenseNSE.API.Services
             List<NewsItem> news,
             CompositeScore score)
         {
-            // Cache 10 minutes
             if (_cache.TryGetValue(stock.Symbol, out var cached) &&
                 (DateTime.Now - cached.GeneratedAt).TotalMinutes < 10)
                 return cached;
@@ -50,16 +49,13 @@ namespace AlgoSenseNSE.API.Services
 
                 int shares = stock.LastPrice > 0
                     ? (int)(capital * 0.60 / stock.LastPrice) : 0;
+                double broker = 40.0;
+                double minProfit = shares > 0 ? broker / shares : 999;
 
-                double brokerage = 40.0;
-                double minProfitNeeded = shares > 0
-                    ? brokerage / shares : 999;
-
-                // ── Fetch market context ──────────────
+                // Market context
                 var mktCtx = await _nse.GetMarketContextAsync();
                 var sector = _nse.GetSectorForSymbol(stock.Symbol);
-                var sectorPerf = _nse.GetSectorPerformance(
-                    stock.Symbol, mktCtx);
+                var sectorPerf = _nse.GetSectorPerformance(stock.Symbol, mktCtx);
                 string sectorText = sectorPerf != null
                     ? $"{sector}: {(sectorPerf.ChangePercent >= 0 ? "+" : "")}{sectorPerf.ChangePercent:F2}% today"
                     : $"{sector}: data unavailable";
@@ -72,39 +68,35 @@ namespace AlgoSenseNSE.API.Services
                     ? $"BEARISH ({bearCount} bear vs {bullCount} bull)"
                     : "MIXED";
 
-                var bullSignals = tech.Signals
+                var bullSigs = tech.Signals
                     .Where(s => s.IsBullish == true)
-                    .Select(s => $"  ✅ {s.Indicator}: {s.Signal}")
-                    .ToList();
-                var bearSignals = tech.Signals
+                    .Select(s => $"  ✅ {s.Indicator}: {s.Signal}").ToList();
+                var bearSigs = tech.Signals
                     .Where(s => s.IsBullish == false)
-                    .Select(s => $"  ❌ {s.Indicator}: {s.Signal}")
-                    .ToList();
+                    .Select(s => $"  ❌ {s.Indicator}: {s.Signal}").ToList();
 
                 var newsText = news.Any()
                     ? string.Join("\n", news.Take(3)
                         .Select(n => $"  • {n.Headline} [{n.SentimentLabel}]"))
                     : "  No specific news today";
 
-                var topSectors = mktCtx.TopSectors.Any()
-                    ? string.Join(", ", mktCtx.TopSectors)
-                    : "Unavailable";
-                var weakSectors = mktCtx.WeakSectors.Any()
-                    ? string.Join(", ", mktCtx.WeakSectors)
-                    : "Unavailable";
+                var topSec = mktCtx.TopSectors.Any()
+                    ? string.Join(", ", mktCtx.TopSectors) : "Unavailable";
+                var weakSec = mktCtx.WeakSectors.Any()
+                    ? string.Join(", ", mktCtx.WeakSectors) : "Unavailable";
 
                 var prompt = $@"You are an expert NSE intraday trader.
 Help a beginner make ₹100-₹200 profit today with ₹{capital:N0} capital.
 {timeCtx}
 
 ━━━ LAYER 1: MARKET CONTEXT ━━━
-Nifty 50:     ₹{mktCtx.NiftyLtp:N0} ({(mktCtx.NiftyChange >= 0 ? "+" : "")}{mktCtx.NiftyChange:F2}%)
-Nifty Trend:  {mktCtx.NiftyTrend}
-India VIX:    {mktCtx.IndiaVix:F1} — {mktCtx.VixInterpretation}
-FII Activity: ₹{mktCtx.FiiNetCrore:N0}Cr → {mktCtx.FiiSentiment}
+Nifty 50:       ₹{mktCtx.NiftyLtp:N0} ({(mktCtx.NiftyChange >= 0 ? "+" : "")}{mktCtx.NiftyChange:F2}%)
+Nifty Trend:    {mktCtx.NiftyTrend}
+India VIX:      {mktCtx.IndiaVix:F1} — {mktCtx.VixInterpretation}
+FII Activity:   ₹{mktCtx.FiiNetCrore:N0}Cr → {mktCtx.FiiSentiment}
 Market Quality: {mktCtx.MarketQualityScore}/100 — {mktCtx.MarketQualityLabel}
-Strong Sectors: {topSectors}
-Weak Sectors:   {weakSectors}
+Strong Sectors: {topSec}
+Weak Sectors:   {weakSec}
 This Stock:     {sectorText}
 
 ━━━ LAYER 2: TECHNICAL (5-min candles) ━━━
@@ -118,8 +110,8 @@ Supertrend: {(tech.SupertrendBullish ? "BUY ✅" : "SELL ❌")}
 ADX:        {tech.ADX:F0} {(tech.ADX > 25 ? "✅ Strong" : "⚠️ Weak")}
 ATR:        ₹{tech.ATR:F2}
 CONSENSUS:  {consensus}
-Bull signals: {string.Join("; ", bullSignals.Take(3))}
-Bear signals: {string.Join("; ", bearSignals.Take(2))}
+Bull signals: {string.Join("; ", bullSigs.Take(3))}
+Bear signals: {string.Join("; ", bearSigs.Take(2))}
 
 ━━━ LAYER 3: FUNDAMENTALS ━━━
 PE: {fund.PE:F1} | ROE: {fund.ROE:F1}% | ROCE: {fund.ROCE:F1}%
@@ -131,10 +123,10 @@ Promoter: {fund.PromoterHolding:F1}% | Fund Score: {fund.Score}/100
 ━━━ CAPITAL MATH ━━━
 Shares: {shares} (60% of ₹{capital:N0})
 Entry: ₹{stock.LastPrice:F2} | Target: ₹{tech.SuggestedTarget:F2} | SL: ₹{tech.SuggestedStopLoss:F2}
-Brokerage: ₹{brokerage:F0} | Min profit/share needed: ₹{minProfitNeeded:F2}
+Brokerage: ₹{broker:F0} | Min profit/share needed: ₹{minProfit:F2}
 
 RULES — ALWAYS AVOID IF:
-• Market Quality < 40 (bad day)
+• Market Quality < 40
 • VIX > 22
 • FII sold > ₹2000Cr
 • Nifty down > 1%
@@ -166,7 +158,6 @@ Respond ONLY in this JSON. No markdown:
 
                 var payload = new
                 {
-                    // ✅ Switched to Haiku — 10x cheaper
                     model = "claude-haiku-4-5-20251001",
                     max_tokens = 1000,
                     messages = new[]
@@ -178,8 +169,7 @@ Respond ONLY in this JSON. No markdown:
                 var req = new HttpRequestMessage(
                     HttpMethod.Post,
                     "https://api.anthropic.com/v1/messages");
-                req.Headers.Add("x-api-key",
-                    _config["Claude:ApiKey"]);
+                req.Headers.Add("x-api-key", _config["Claude:ApiKey"]);
                 req.Headers.Add("anthropic-version", "2023-06-01");
                 req.Content = new StringContent(
                     JsonConvert.SerializeObject(payload),
@@ -200,7 +190,7 @@ Respond ONLY in this JSON. No markdown:
                     .DeserializeObject<AiAnalysis>(clean)
                     ?? FallbackAnalysis(stock, tech, score, shares, mktCtx);
 
-                // Fix AVOID — set entry=price so display is correct
+                // Fix AVOID — zero out trade levels
                 if (analysis.Recommendation == "AVOID")
                 {
                     analysis.Entry = stock.LastPrice;
@@ -210,7 +200,6 @@ Respond ONLY in this JSON. No markdown:
                 }
                 else
                 {
-                    // Ensure target > entry
                     if (analysis.Target <= analysis.Entry)
                         analysis.Target = analysis.Entry * 1.005;
                     if (analysis.StopLoss >= analysis.Entry)
@@ -223,10 +212,8 @@ Respond ONLY in this JSON. No markdown:
 
                 _logger.LogInformation(
                     "✅ AI {sym}: {rec} conf:{conf}% | " +
-                    "VIX:{vix:F1} FII:₹{fii:N0}Cr " +
-                    "Nifty:{chg} | {summary}",
-                    stock.Symbol, analysis.Recommendation,
-                    analysis.Confidence,
+                    "VIX:{vix:F1} FII:₹{fii:N0}Cr Nifty:{chg} | {summary}",
+                    stock.Symbol, analysis.Recommendation, analysis.Confidence,
                     mktCtx.IndiaVix, mktCtx.FiiNetCrore,
                     mktCtx.NiftyChange >= 0
                         ? $"+{mktCtx.NiftyChange:F1}%"
@@ -239,13 +226,11 @@ Respond ONLY in this JSON. No markdown:
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex,
-                    "❌ Claude AI failed for {sym}", stock.Symbol);
-                int shares = stock.LastPrice > 0
-                    ? (int)(_config.GetValue<double>(
-                        "Trading:Capital", 1500) * 0.60
-                        / stock.LastPrice) : 0;
-                return FallbackAnalysis(stock, tech, score, shares, null);
+                _logger.LogError(ex, "❌ Claude AI failed for {sym}", stock.Symbol);
+                int sh = stock.LastPrice > 0
+                    ? (int)(_config.GetValue<double>("Trading:Capital", 1500)
+                        * 0.60 / stock.LastPrice) : 0;
+                return FallbackAnalysis(stock, tech, score, sh, null);
             }
         }
 
@@ -254,8 +239,7 @@ Respond ONLY in this JSON. No markdown:
             CompositeScore score, int shares,
             MarketContext? mkt)
         {
-            bool marketOk = mkt == null ||
-                mkt.MarketQualityScore >= 45;
+            bool marketOk = mkt == null || mkt.MarketQualityScore >= 45;
             bool vixOk = mkt == null || mkt.IndiaVix < 20;
 
             bool strongBuy = marketOk && vixOk
@@ -265,16 +249,16 @@ Respond ONLY in this JSON. No markdown:
                 && tech.ADX > 18 && tech.Score >= 65;
 
             string rec = strongBuy ? "BUY" : "AVOID";
-            double brokerage = 40.0;
-            double grossP = shares * (tech.SuggestedTarget - stock.LastPrice);
-            double netP = grossP - brokerage;
+            double broker = 40.0;
+            double gross = shares * (tech.SuggestedTarget - stock.LastPrice);
+            double net = gross - broker;
 
             return new AiAnalysis
             {
                 Symbol = stock.Symbol,
                 Recommendation = rec,
                 Confidence = strongBuy ? 68 : 55,
-                Entry = rec == "BUY" ? stock.LastPrice : stock.LastPrice,
+                Entry = stock.LastPrice,
                 Target = rec == "BUY"
                     ? (tech.SuggestedTarget > stock.LastPrice
                         ? tech.SuggestedTarget
@@ -286,7 +270,7 @@ Respond ONLY in this JSON. No markdown:
                         : stock.LastPrice * 0.9975)
                     : stock.LastPrice,
                 RiskReward = rec == "BUY" ? "1:1.5" : "N/A",
-                ExpectedProfit = $"₹{netP:F0} on {shares} shares",
+                ExpectedProfit = $"₹{net:F0} on {shares} shares",
                 TimeHorizon = "Exit by 14:00",
                 Summary = rec == "BUY"
                     ? $"{stock.Symbol}: Technical signals aligned"
@@ -306,8 +290,7 @@ Respond ONLY in this JSON. No markdown:
             };
         }
 
-        public void ClearCache(string symbol) =>
-            _cache.Remove(symbol);
+        public void ClearCache(string symbol) => _cache.Remove(symbol);
         public void ClearAllCache() => _cache.Clear();
 
         private DateTime GetIST()
@@ -315,13 +298,9 @@ Respond ONLY in this JSON. No markdown:
             try
             {
                 return TimeZoneInfo.ConvertTime(DateTime.UtcNow,
-                    TimeZoneInfo.FindSystemTimeZoneById(
-                        "India Standard Time"));
+                    TimeZoneInfo.FindSystemTimeZoneById("India Standard Time"));
             }
-            catch
-            {
-                return DateTime.UtcNow.AddHours(5).AddMinutes(30);
-            }
+            catch { return DateTime.UtcNow.AddHours(5).AddMinutes(30); }
         }
     }
 }
