@@ -99,6 +99,8 @@ namespace AlgoSenseNSE.API.Services
                 {
                     Symbol        = sym,
                     LTP           = tick.LTP,
+                    High          = tick.High > 0 ? tick.High : tick.LTP,
+                    Low           = tick.Low  > 0 ? tick.Low  : tick.LTP,
                     Volume        = tick.Volume,
                     ChangePercent = tick.ChangePercent,
                     AffordableQty = shares,
@@ -222,19 +224,54 @@ namespace AlgoSenseNSE.API.Services
         {
             lock (_lock) { return _candidates.ToList(); }
         }
+
+        // ── Compatibility methods expected by controllers ─
+        public int CandidateCount
+        {
+            get { lock (_lock) { return _candidates.Count; } }
+        }
+
+        public List<ScreenedStock> GetTopGainers(int count = 10)
+        {
+            lock (_lock)
+            {
+                return _candidates
+                    .Where(s => s.ChangePercent > 0)
+                    .OrderByDescending(s => s.ChangePercent)
+                    .Take(count)
+                    .ToList();
+            }
+        }
+
+        public List<ScreenedStock> GetVolumeSpikes(int count = 10)
+        {
+            lock (_lock)
+            {
+                return _candidates
+                    .OrderByDescending(s => s.Volume)
+                    .Take(count)
+                    .ToList();
+            }
+        }
     }
 
     public class ScreenedStock
     {
-        public string   Symbol        { get; set; } = "";
-        public double   LTP           { get; set; }
-        public long     Volume        { get; set; }
-        public double   ChangePercent { get; set; }
-        public int      AffordableQty { get; set; }
-        public double   MaxCapNeeded  { get; set; }
-        public double   MomentumScore { get; set; }
-        public int      Tier          { get; set; } = 2;
-        public DateTime LastUpdated   { get; set; }
+        public string   Symbol          { get; set; } = "";
+        public double   LTP             { get; set; }
+        public long     Volume          { get; set; }
+        public double   ChangePercent   { get; set; }
+        public int      AffordableQty   { get; set; }
+        public double   MaxCapNeeded    { get; set; }
+        public double   MomentumScore   { get; set; }
+        public int      Tier            { get; set; } = 2;
+        public DateTime LastUpdated     { get; set; }
+
+        // Compatibility aliases — old code may use these names
+        public double   Price           => LTP;
+        public double   High            { get; set; }
+        public double   Low             { get; set; }
+        public int      AffordableShares => AffordableQty;
     }
 
     public class ScreenerSummary
