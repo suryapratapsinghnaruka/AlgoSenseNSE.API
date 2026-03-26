@@ -28,10 +28,18 @@ namespace AlgoSenseNSE.API.Services
     {
         private readonly ILogger<TechnicalAnalysisService> _logger;
 
-        // Slippage estimates for NSE mid-cap stocks
-        private const double EntrySlippagePct  = 0.0010; // +0.10%
-        private const double TargetSlippagePct = 0.0010; // -0.10%
-        private const double SlSlippagePct     = 0.0005; // -0.05%
+        // Price-sensitive slippage (NSE market reality)
+        // Low-priced stocks have wider bid-ask spreads
+        // High-priced stocks have tighter spreads
+        private static (double entry, double target, double sl)
+            GetSlippage(double price)
+        {
+            if (price < 100)
+                return (0.0020, 0.0020, 0.0010); // ₹20–₹99: 0.20%
+            if (price < 300)
+                return (0.0010, 0.0010, 0.0005); // ₹100–₹299: 0.10%
+            return (0.0005, 0.0005, 0.0003);     // ₹300+: 0.05%
+        }
 
         public TechnicalAnalysisService(
             ILogger<TechnicalAnalysisService> logger)
@@ -141,56 +149,36 @@ namespace AlgoSenseNSE.API.Services
                 }
             }
 
-            // ━━━ 2. RSI (14) ━━━━━━━━━━━━━━━━━━━━━━━━━
+            // ━━━ 2. RSI (14) — gate only, not scorer ━━━
+            // RSI is enforced as hard gate in RuleEngine (45–75 required).
+            // Adding it to score was double-counting the same signal.
+            // Kept here for display and Claude context only.
             var rsiResults = quotes.GetRsi(14).ToList();
             var lastRsi    = rsiResults.LastOrDefault(r => r.Rsi != null);
             if (lastRsi?.Rsi != null)
             {
                 result.RSI = (double)lastRsi.Rsi;
 
+                // Report RSI for display only — no score impact
+                string rsiSignal;
+                bool?  rsiBullish;
                 if (result.RSI >= 55 && result.RSI <= 72)
-                {
-                    score += 18; bullSignals++;
-                    result.Signals.Add(new TechnicalSignal
-                    {
-                        Indicator = "RSI",
-                        Value     = result.RSI.ToString("F1"),
-                        Signal    = "RSI in bullish zone (55-72) — momentum buy",
-                        IsBullish = true
-                    });
-                }
+                { rsiSignal = "RSI in buy zone (55-72) ✅"; rsiBullish = true; }
                 else if (result.RSI > 72)
-                {
-                    score -= 14; bearSignals++;
-                    result.Signals.Add(new TechnicalSignal
-                    {
-                        Indicator = "RSI",
-                        Value     = result.RSI.ToString("F1"),
-                        Signal    = "RSI overbought (>72) — avoid buying",
-                        IsBullish = false
-                    });
-                }
-                else if (result.RSI >= 35 && result.RSI < 55)
-                {
-                    result.Signals.Add(new TechnicalSignal
-                    {
-                        Indicator = "RSI",
-                        Value     = result.RSI.ToString("F1"),
-                        Signal    = "RSI neutral — no strong signal",
-                        IsBullish = null
-                    });
-                }
+                { rsiSignal = "RSI overbought (>72) ❌"; rsiBullish = false; }
+                else if (result.RSI >= 45 && result.RSI < 55)
+                { rsiSignal = "RSI neutral (45-55)"; rsiBullish = null; }
                 else
+                { rsiSignal = $"RSI {result.RSI:F1} — outside buy zone"; rsiBullish = false; }
+
+                result.Signals.Add(new TechnicalSignal
                 {
-                    score -= 12; bearSignals++;
-                    result.Signals.Add(new TechnicalSignal
-                    {
-                        Indicator = "RSI",
-                        Value     = result.RSI.ToString("F1"),
-                        Signal    = "RSI oversold/weak (<35) — bearish",
-                        IsBullish = false
-                    });
-                }
+                    Indicator = "RSI (gate)",
+                    Value     = result.RSI.ToString("F1"),
+                    Signal    = rsiSignal + " — gate only, not scored",
+                    IsBullish = rsiBullish
+                });
+                // NOTE: score not modified — RSI is a gate in RuleEngine
             }
 
             // ━━━ 3. MACD (12,26,9) ━━━━━━━━━━━━━━━━━━━
@@ -414,22 +402,23 @@ namespace AlgoSenseNSE.API.Services
             // ━━━ Slippage-adjusted target and SL ━━━━━━
             // Realistic prices after market order execution
             double adjEntry, adjTarget, adjSL;
+            var (slipEntry, slipTarget, slipSL) =
+                GetSlippage(lastClose);
+
             if (result.ATR > 0)
             {
-                // Raw ATR-based levels
-                double rawTarget = lastClose + (result.ATR * 2.0); // 1:2 R:R
+                double rawTarget = lastClose + (result.ATR * 2.0);
                 double rawSL     = lastClose - (result.ATR * 0.75);
 
-                // Apply slippage
-                adjEntry  = lastClose  * (1 + EntrySlippagePct);
-                adjTarget = rawTarget  * (1 - TargetSlippagePct);
-                adjSL     = rawSL      * (1 - SlSlippagePct);
+                adjEntry  = lastClose * (1 + slipEntry);
+                adjTarget = rawTarget * (1 - slipTarget);
+                adjSL     = rawSL    * (1 - slipSL);
             }
             else
             {
-                adjEntry  = lastClose  * (1 + EntrySlippagePct);
-                adjTarget = lastClose  * 1.005  * (1 - TargetSlippagePct);
-                adjSL     = lastClose  * 0.9975 * (1 - SlSlippagePct);
+                adjEntry  = lastClose * (1 + slipEntry);
+                adjTarget = lastClose * 1.005  * (1 - slipTarget);
+                adjSL     = lastClose * 0.9975 * (1 - slipSL);
             }
 
             result.SuggestedTarget   = Math.Round(adjTarget, 2);
