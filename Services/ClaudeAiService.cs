@@ -362,13 +362,16 @@ Respond ONLY in this JSON (no markdown, no preamble):
             // ── All rules passed → BUY ─────────────────
             // Price-sensitive slippage (realistic market order fills)
             double rawEntry = stock.LastPrice;
-            double (slipE, slipT, slipSL) = rawEntry switch
+            var slipTuple = rawEntry switch
             {
-                < 100  => (0.0020, 0.0020, 0.0010),
-                < 300  => (0.0010, 0.0010, 0.0005),
-                _      => (0.0005, 0.0005, 0.0003)
+                < 100  => (E: 0.0020, T: 0.0020, SL: 0.0010),
+                < 300  => (E: 0.0010, T: 0.0010, SL: 0.0005),
+                _      => (E: 0.0005, T: 0.0005, SL: 0.0003)
             };
-            double entry = rawEntry * (1 + slipE);
+            double slipE  = slipTuple.E;
+            double slipT  = slipTuple.T;
+            double slipSL = slipTuple.SL;
+            double entry  = rawEntry * (1 + slipE);
 
             double sl, target;
             if (tech.ATR > 0)
