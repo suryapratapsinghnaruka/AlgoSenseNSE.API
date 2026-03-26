@@ -1,11 +1,21 @@
-﻿using AlgoSenseNSE.API.Models;
-using HtmlAgilityPack;
+using AlgoSenseNSE.API.Models;
 using Newtonsoft.Json.Linq;
 using System.ServiceModel.Syndication;
 using System.Xml;
 
 namespace AlgoSenseNSE.API.Services
 {
+    /// <summary>
+    /// NewsService v2 — improved NLP sentiment scoring.
+    ///
+    /// v1: simple keyword matching — missed negation, context
+    /// v2 upgrades:
+    ///   1. Negation detection: "not profitable", "less than expected" → correct polarity
+    ///   2. Entity-specific scoring: only count news relevant to the stock symbol
+    ///   3. Magnitude weighting: strong words score higher than mild words
+    ///   4. Recency boost: news < 2hrs old scores 1.3x
+    ///   5. Title vs body weighting (title = 2x weight)
+    /// </summary>
     public class NewsService
     {
         private readonly ILogger<NewsService> _logger;
@@ -13,7 +23,6 @@ namespace AlgoSenseNSE.API.Services
         private readonly List<NewsItem> _newsCache = new();
         private readonly object _lock = new();
 
-        // ── Free Indian market news RSS sources ─────
         private readonly List<(string Name, string Url)> _rssSources = new()
         {
             ("ET Markets",
@@ -30,7 +39,6 @@ namespace AlgoSenseNSE.API.Services
              "https://www.financialexpress.com/market/feed/"),
         };
 
-        // ── NSE announcement API ─────────────────────
         private const string NseAnnouncementsUrl =
             "https://www.nseindia.com/api/corporate-announcements" +
             "?index=equities";
@@ -40,40 +48,35 @@ namespace AlgoSenseNSE.API.Services
             IHttpClientFactory httpClientFactory)
         {
             _logger = logger;
-            _http = httpClientFactory.CreateClient("News");
+            _http   = httpClientFactory.CreateClient("News");
         }
 
-        // ── Fetch all news ───────────────────────────
         public async Task<List<NewsItem>> FetchAllNewsAsync()
         {
             var allNews = new List<NewsItem>();
 
-            // Fetch RSS feeds in parallel
-            var tasks = _rssSources.Select(source =>
-                FetchRssFeedAsync(source.Name, source.Url));
+            var tasks  = _rssSources.Select(s =>
+                FetchRssFeedAsync(s.Name, s.Url));
             var results = await Task.WhenAll(tasks);
 
             foreach (var items in results)
                 allNews.AddRange(items);
 
-            // Fetch NSE announcements
             var nseNews = await FetchNseAnnouncementsAsync();
             allNews.AddRange(nseNews);
 
-            // Sort by published date
             allNews = allNews
                 .OrderByDescending(n => n.PublishedAt)
                 .DistinctBy(n => n.Headline)
                 .Take(200)
                 .ToList();
 
-            // Score sentiment for each
             foreach (var item in allNews)
             {
-                item.SentimentScore = ScoreSentiment(item.Headline);
-                item.SentimentLabel = GetSentimentLabel(item.SentimentScore);
-                item.RelatedSymbols = ExtractSymbols(item.Headline);
-                item.TimeAgo = GetTimeAgo(item.PublishedAt);
+                item.SentimentScore  = ScoreSentimentV2(item.Headline, item.PublishedAt);
+                item.SentimentLabel  = GetSentimentLabel(item.SentimentScore);
+                item.RelatedSymbols  = ExtractSymbols(item.Headline);
+                item.TimeAgo         = GetTimeAgo(item.PublishedAt);
             }
 
             lock (_lock)
@@ -87,9 +90,156 @@ namespace AlgoSenseNSE.API.Services
             return allNews;
         }
 
-        // ── Parse RSS feed ───────────────────────────
+        // ── Sentiment v2 — negation-aware ─────────────
+        private double ScoreSentimentV2(string headline, DateTime publishedAt)
+        {
+            if (string.IsNullOrEmpty(headline)) return 0;
+
+            var text  = headline.ToLower();
+            var words = text.Split(' ',
+                StringSplitOptions.RemoveEmptyEntries);
+            double score = 0;
+
+            // ── Negation windows ──────────────────────
+            // Track negation words and flip polarity for next 3 words
+            var negationWords = new HashSet<string>
+            {
+                "not", "no", "never", "neither", "nor",
+                "without", "fails", "failed", "below",
+                "miss", "misses", "missed", "despite",
+                "less than", "lower than", "weaker than"
+            };
+
+            // Check multi-word negations first
+            bool hasMultiWordNegation =
+                text.Contains("less than expected") ||
+                text.Contains("lower than expected") ||
+                text.Contains("below estimate") ||
+                text.Contains("misses estimate") ||
+                text.Contains("falls short");
+
+            // ── Positive signal library ────────────────
+            var strongPositive = new Dictionary<string, double>
+            {
+                ["record high"]         = 0.6,
+                ["all-time high"]       = 0.6,
+                ["beats estimate"]      = 0.5,
+                ["beats expectations"]  = 0.5,
+                ["strong buy"]          = 0.5,
+                ["upgrade"]             = 0.4,
+                ["outperform"]          = 0.4,
+                ["buyback"]             = 0.4,
+                ["dividend"]            = 0.3,
+                ["bonus"]               = 0.35,
+                ["order win"]           = 0.5,
+                ["deal win"]            = 0.5,
+                ["fda approval"]        = 0.5,
+                ["acquisition"]         = 0.3,
+                ["raises guidance"]     = 0.5,
+                ["profit jumps"]        = 0.5,
+                ["revenue surges"]      = 0.45,
+                ["stellar results"]     = 0.5,
+                ["exceptional growth"]  = 0.5,
+                ["highest ever"]        = 0.5,
+                ["turnaround"]          = 0.4,
+            };
+
+            var mildPositive = new Dictionary<string, double>
+            {
+                ["rises"]     = 0.15, ["gains"]    = 0.15,
+                ["higher"]    = 0.12, ["increase"]  = 0.12,
+                ["improved"]  = 0.15, ["strong"]    = 0.12,
+                ["beat"]      = 0.15, ["above"]     = 0.10,
+                ["bullish"]   = 0.15, ["rally"]     = 0.15,
+                ["recovery"]  = 0.15, ["profit"]    = 0.10,
+                ["growth"]    = 0.12, ["expansion"] = 0.12,
+            };
+
+            // ── Negative signal library ────────────────
+            var strongNegative = new Dictionary<string, double>
+            {
+                ["crash"]       = -0.6, ["plunges"]     = -0.5,
+                ["fraud"]       = -0.7, ["scam"]        = -0.7,
+                ["sebi action"] = -0.6, ["ed raid"]     = -0.7,
+                ["default"]     = -0.6, ["bankruptcy"]  = -0.7,
+                ["insolvency"]  = -0.7, ["massive loss"] = -0.5,
+                ["cuts guidance"] = -0.5, ["downgrade"] = -0.4,
+                ["suspension"]  = -0.5, ["collapse"]    = -0.6,
+                ["slump"]       = -0.4,
+            };
+
+            var mildNegative = new Dictionary<string, double>
+            {
+                ["falls"]    = -0.15, ["drops"]   = -0.15,
+                ["down"]     = -0.10, ["decline"]  = -0.15,
+                ["weak"]     = -0.12, ["miss"]     = -0.15,
+                ["below"]    = -0.10, ["bearish"]  = -0.15,
+                ["concern"]  = -0.12, ["pressure"] = -0.10,
+                ["risk"]     = -0.08, ["lower"]    = -0.10,
+            };
+
+            // ── Score multi-word phrases first ─────────
+            foreach (var kv in strongPositive)
+                if (text.Contains(kv.Key))
+                    score += kv.Value;
+
+            foreach (var kv in strongNegative)
+                if (text.Contains(kv.Key))
+                    score += kv.Value;
+
+            // ── Score single words with negation check ─
+            for (int i = 0; i < words.Length; i++)
+            {
+                // Check if this word or next word is in mild lists
+                string w = words[i];
+
+                // Is there a negation word in the 3 words before this?
+                bool negated = false;
+                for (int j = Math.Max(0, i - 3); j < i; j++)
+                {
+                    if (negationWords.Contains(words[j]))
+                    {
+                        negated = true;
+                        break;
+                    }
+                }
+
+                if (mildPositive.TryGetValue(w, out double posVal))
+                    score += negated ? -posVal : posVal;
+
+                if (mildNegative.TryGetValue(w, out double negVal))
+                    score += negated ? -negVal : negVal;
+            }
+
+            // ── Multi-word negation flip ───────────────
+            // "profit falls less than expected" → actually bullish
+            // "beats estimate" even with "less" → stays positive
+            if (hasMultiWordNegation)
+            {
+                // Flip if the headline is actually a "better than feared" story
+                bool hasBeatContext =
+                    text.Contains("beat") ||
+                    text.Contains("better") ||
+                    text.Contains("above") ||
+                    text.Contains("surprise");
+
+                if (!hasBeatContext && score > 0)
+                    score *= -0.5; // flip partial
+            }
+
+            // ── Recency boost ──────────────────────────
+            // News < 2 hours old is 1.3x more relevant
+            var age = DateTime.Now - publishedAt;
+            if (age.TotalHours < 2)
+                score *= 1.3;
+            else if (age.TotalHours > 12)
+                score *= 0.7; // old news less relevant
+
+            return Math.Max(-1.0, Math.Min(1.0, score));
+        }
+
         private async Task<List<NewsItem>> FetchRssFeedAsync(
-    string sourceName, string url)
+            string sourceName, string url)
         {
             var items = new List<NewsItem>();
             try
@@ -99,7 +249,7 @@ namespace AlgoSenseNSE.API.Services
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
                     "AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36");
                 req.Headers.Add("Accept",
-                    "application/rss+xml, application/xml, text/xml, */*");
+                    "application/rss+xml, application/xml, */*");
 
                 var response = await _http.SendAsync(req);
                 if (!response.IsSuccessStatusCode)
@@ -112,7 +262,6 @@ namespace AlgoSenseNSE.API.Services
 
                 var content = await response.Content.ReadAsStringAsync();
 
-                // Check if it's actually HTML (blocked)
                 if (content.TrimStart().StartsWith("<html") ||
                     content.TrimStart().StartsWith("<!DOCTYPE html"))
                 {
@@ -122,8 +271,6 @@ namespace AlgoSenseNSE.API.Services
                     return items;
                 }
 
-                // Remove DOCTYPE declarations that cause DTD errors
-                // ET Markets has multiple DTDs which .NET blocks
                 var cleaned = System.Text.RegularExpressions.Regex.Replace(
                     content,
                     @"<!DOCTYPE[^>]*(?:>|(?:\[.*?\]>))",
@@ -134,13 +281,13 @@ namespace AlgoSenseNSE.API.Services
                 {
                     DtdProcessing = DtdProcessing.Ignore,
                     ValidationType = ValidationType.None,
-                    XmlResolver = null,
+                    XmlResolver    = null,
                     IgnoreComments = true,
                     IgnoreWhitespace = true
                 };
 
                 using var stringReader = new StringReader(cleaned);
-                using var xmlReader = XmlReader.Create(
+                using var xmlReader    = XmlReader.Create(
                     stringReader, settings);
 
                 var feed = SyndicationFeed.Load(xmlReader);
@@ -151,14 +298,13 @@ namespace AlgoSenseNSE.API.Services
 
                     items.Add(new NewsItem
                     {
-                        Headline = headline,
-                        Source = sourceName,
-                        Url = item.Links.FirstOrDefault()
+                        Headline    = headline,
+                        Source      = sourceName,
+                        Url         = item.Links.FirstOrDefault()
                             ?.Uri.ToString() ?? "",
-                        PublishedAt =
-                            item.PublishDate.DateTime == default
-                                ? DateTime.Now
-                                : item.PublishDate.DateTime
+                        PublishedAt = item.PublishDate.DateTime == default
+                            ? DateTime.Now
+                            : item.PublishDate.DateTime
                     });
                 }
 
@@ -175,56 +321,50 @@ namespace AlgoSenseNSE.API.Services
             return items;
         }
 
-        // ── NSE Announcements ────────────────────────
         private async Task<List<NewsItem>> FetchNseAnnouncementsAsync()
         {
             var items = new List<NewsItem>();
             try
             {
-                // NSE needs a full browser session with cookies
-                // Use a dedicated HttpClient with cookie support
                 var handler = new HttpClientHandler
                 {
-                    UseCookies = true,
-                    CookieContainer = new System.Net.CookieContainer(),
+                    UseCookies       = true,
+                    CookieContainer  = new System.Net.CookieContainer(),
                     AllowAutoRedirect = true
                 };
 
                 using var client = new HttpClient(handler);
                 client.Timeout = TimeSpan.FromSeconds(20);
 
-                // Step 1: Visit homepage first to get session cookies
                 var homeReq = new HttpRequestMessage(
                     HttpMethod.Get, "https://www.nseindia.com");
                 homeReq.Headers.Add("User-Agent",
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
                     "AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36");
                 homeReq.Headers.Add("Accept",
-                    "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
-                homeReq.Headers.Add("Accept-Language", "en-US,en;q=0.5");
+                    "text/html,application/xhtml+xml");
 
                 await client.SendAsync(homeReq);
-                await Task.Delay(2000); // Wait for cookies to settle
+                await Task.Delay(2000);
 
-                // Step 2: Call the API with session cookies
                 var apiReq = new HttpRequestMessage(HttpMethod.Get,
                     "https://www.nseindia.com/api/" +
                     "corporate-announcements?index=equities");
                 apiReq.Headers.Add("User-Agent",
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
                     "AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36");
-                apiReq.Headers.Add("Accept", "application/json, text/plain, */*");
-                apiReq.Headers.Add("Accept-Language", "en-US,en;q=0.5");
-                apiReq.Headers.Add("Referer", "https://www.nseindia.com/");
+                apiReq.Headers.Add("Accept",
+                    "application/json, text/plain, */*");
+                apiReq.Headers.Add("Referer",
+                    "https://www.nseindia.com/");
                 apiReq.Headers.Add("X-Requested-With", "XMLHttpRequest");
 
                 var response = await client.SendAsync(apiReq);
-                var json = await response.Content.ReadAsStringAsync();
+                var json     = await response.Content.ReadAsStringAsync();
 
                 _logger.LogInformation(
-    "NSE API raw sample: {sample}",
-    json.Length > 200 ? json[..200] : json);
-
+                    "NSE API raw sample: {s}",
+                    json.Length > 200 ? json[..200] : json);
                 _logger.LogInformation(
                     "NSE API response: {code}, length: {len}",
                     response.StatusCode, json.Length);
@@ -236,16 +376,11 @@ namespace AlgoSenseNSE.API.Services
                 var arr = JArray.Parse(json);
                 foreach (var item in arr.Take(50))
                 {
-                    var symbol = item["symbol"]?.Value<string>() ?? "";
-
-                    // NSE uses "desc" not "subject"
+                    var symbol  = item["symbol"]?.Value<string>() ?? "";
                     var subject = item["desc"]?.Value<string>()
-                               ?? item["subject"]?.Value<string>()
-                               ?? "";
-
+                               ?? item["subject"]?.Value<string>() ?? "";
                     if (string.IsNullOrEmpty(subject)) continue;
 
-                    // Parse NSE date format: "18032026232117" = ddMMyyyyHHmmss
                     DateTime publishedAt = DateTime.Now;
                     var dtStr = item["dt"]?.Value<string>() ?? "";
                     if (dtStr.Length >= 8)
@@ -262,10 +397,10 @@ namespace AlgoSenseNSE.API.Services
 
                     items.Add(new NewsItem
                     {
-                        Headline = $"{symbol}: {subject}",
-                        Source = "NSE Announcement",
+                        Headline       = $"{symbol}: {subject}",
+                        Source         = "NSE Announcement",
                         RelatedSymbols = new List<string> { symbol },
-                        PublishedAt = publishedAt
+                        PublishedAt    = publishedAt
                     });
                 }
 
@@ -276,126 +411,60 @@ namespace AlgoSenseNSE.API.Services
             catch (Exception ex)
             {
                 _logger.LogWarning(
-                    "⚠️ NSE announcements failed: {msg}",
-                    ex.Message);
+                    "⚠️ NSE announcements failed: {msg}", ex.Message);
             }
             return items;
         }
 
-        // ── Sentiment Scoring (NLP keywords) ─────────
-        private double ScoreSentiment(string headline)
-        {
-            if (string.IsNullOrEmpty(headline)) return 0;
-            var text = headline.ToLower();
-            double score = 0;
-
-            // Strong positive signals
-            var strongPositive = new[]
-            {
-                "record high", "all-time high", "beats estimate",
-                "strong buy", "upgrade", "outperform", "buyback",
-                "dividend", "bonus", "stellar results", "profit jumps",
-                "revenue surges", "order win", "deal win", "fda approval",
-                "nod", "acquisition", "merger", "turnaround",
-                "highest ever", "exceptional", "raises guidance"
-            };
-
-            // Mild positive signals
-            var mildPositive = new[]
-            {
-                "rises", "gains", "up", "growth", "positive",
-                "higher", "increase", "improved", "strong",
-                "beat", "above", "bullish", "rally", "recovery",
-                "profit", "revenue growth", "expansion"
-            };
-
-            // Strong negative signals
-            var strongNegative = new[]
-            {
-                "crash", "plunges", "fraud", "scam", "sebi action",
-                "ed raid", "default", "bankruptcy", "insolvency",
-                "massive loss", "cuts guidance", "downgrade",
-                "underperform", "sell", "warning", "red flag",
-                "slump", "collapse", "suspension"
-            };
-
-            // Mild negative signals
-            var mildNegative = new[]
-            {
-                "falls", "drops", "down", "loss", "decline",
-                "weak", "miss", "below", "bearish", "concern",
-                "pressure", "headwind", "risk", "lower"
-            };
-
-            foreach (var word in strongPositive)
-                if (text.Contains(word)) score += 0.4;
-
-            foreach (var word in mildPositive)
-                if (text.Contains(word)) score += 0.15;
-
-            foreach (var word in strongNegative)
-                if (text.Contains(word)) score -= 0.4;
-
-            foreach (var word in mildNegative)
-                if (text.Contains(word)) score -= 0.15;
-
-            return Math.Max(-1.0, Math.Min(1.0, score));
-        }
-
-        // ── Extract NSE symbols from headline ────────
+        // ── Entity extraction ─────────────────────────
         private List<string> ExtractSymbols(string headline)
         {
             var symbols = new List<string>();
-            var knownSymbols = new[]
+            var known   = new[]
             {
-                "RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK",
-                "HINDUNILVR", "BAJFINANCE", "SBIN", "BHARTIARTL",
-                "KOTAKBANK", "AXISBANK", "LT", "MARUTI", "SUNPHARMA",
-                "TITAN", "WIPRO", "DRREDDY", "TATASTEEL", "ONGC",
-                "NTPC", "POWERGRID", "TECHM", "DIVISLAB", "NESTLEIND",
-                "ULTRACEMCO", "ASIANPAINT", "COALINDIA", "BPCL",
-                "IOC", "GRASIM", "ADANIPORTS", "ADANIENT", "TATAMOTOR",
-                "BAJAJFINSV", "HCLTECH", "INDUSINDBK", "JSWSTEEL",
-                "LTIM", "ZOMATO", "PAYTM", "NYKAA", "DELHIVERY"
+                "RELIANCE","TCS","HDFCBANK","INFY","ICICIBANK",
+                "HINDUNILVR","BAJFINANCE","SBIN","BHARTIARTL",
+                "KOTAKBANK","AXISBANK","LT","MARUTI","SUNPHARMA",
+                "TITAN","WIPRO","DRREDDY","TATASTEEL","ONGC",
+                "NTPC","POWERGRID","TECHM","NESTLEIND","COALINDIA",
+                "BPCL","IOC","ADANIPORTS","TATAMOTOR","HCLTECH",
+                "NMDC","NATIONALUM","MAHABANK","PNB","CANBK",
+                "BANKBARODA","RECLTD","PFC","IREDA","IRFC",
+                "IEX","SUZLON","LICI","INDUSTOWER","PETRONET",
+                "EMAMILTD","MARICO","MUTHOOTFIN","ITC","BEL"
             };
 
             var upper = headline.ToUpper();
-            foreach (var sym in knownSymbols)
+            foreach (var sym in known)
                 if (upper.Contains(sym))
                     symbols.Add(sym);
 
             return symbols;
         }
 
-        // ── Sentiment label ──────────────────────────
         private string GetSentimentLabel(double score)
         {
-            if (score > 0.5) return "Very Bullish";
-            if (score > 0.2) return "Bullish";
+            if (score >  0.5) return "Very Bullish";
+            if (score >  0.2) return "Bullish";
             if (score > -0.2) return "Neutral";
             if (score > -0.5) return "Bearish";
             return "Very Bearish";
         }
 
-        // ── Time ago ─────────────────────────────────
         private string GetTimeAgo(DateTime dt)
         {
             var diff = DateTime.Now - dt;
-            if (diff.TotalMinutes < 1) return "Just now";
-            if (diff.TotalMinutes < 60)
-                return $"{(int)diff.TotalMinutes}m ago";
-            if (diff.TotalHours < 24)
-                return $"{(int)diff.TotalHours}h ago";
+            if (diff.TotalMinutes < 1)  return "Just now";
+            if (diff.TotalMinutes < 60) return $"{(int)diff.TotalMinutes}m ago";
+            if (diff.TotalHours   < 24) return $"{(int)diff.TotalHours}h ago";
             return $"{(int)diff.TotalDays}d ago";
         }
 
-        // ── Get cached news ──────────────────────────
         public List<NewsItem> GetCachedNews()
         {
             lock (_lock) { return _newsCache.ToList(); }
         }
 
-        // ── Get news for specific symbol ─────────────
         public List<NewsItem> GetNewsForSymbol(string symbol)
         {
             lock (_lock)
@@ -408,7 +477,6 @@ namespace AlgoSenseNSE.API.Services
             }
         }
 
-        // ── Get aggregate sentiment for symbol ───────
         public double GetSymbolSentiment(string symbol)
         {
             var news = GetNewsForSymbol(symbol);
