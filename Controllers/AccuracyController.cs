@@ -11,15 +11,18 @@ namespace AlgoSenseNSE.API.Controllers
     [Route("api/accuracy")]
     public class AccuracyController : ControllerBase
     {
-        private readonly SignalTrackingService _signals;
-        private readonly AlertEngine          _alerts;
+        private readonly SignalTrackingService  _signals;
+        private readonly AlertEngine           _alerts;
+        private readonly RejectedTradeTracker  _rejected;
 
         public AccuracyController(
             SignalTrackingService signals,
-            AlertEngine alerts)
+            AlertEngine alerts,
+            RejectedTradeTracker rejected)
         {
-            _signals = signals;
-            _alerts  = alerts;
+            _signals  = signals;
+            _alerts   = alerts;
+            _rejected = rejected;
         }
 
         // ── GET /api/accuracy ────────────────────────
@@ -108,6 +111,34 @@ namespace AlgoSenseNSE.API.Controllers
             {
                 count   = training.Count,
                 signals = training.Take(100)
+            });
+        }
+
+        // ── GET /api/accuracy/rejections ─────────────
+        // Rejected trades analysis — which gates are too strict?
+        [HttpGet("rejections")]
+        public async Task<IActionResult> GetRejections(
+            [FromQuery] int days = 30)
+        {
+            var insights = await _rejected.GetInsightsAsync(days);
+            return Ok(new
+            {
+                period         = $"Last {days} days",
+                totalRejected  = insights.TotalRejected,
+                wouldHaveWon   = insights.WouldHaveWon,
+                wouldHaveWonPct = insights.WouldHaveWonPct,
+                insight        = insights.Insight,
+                byReason       = insights.ReasonBreakdown,
+                howToRead      = new
+                {
+                    wouldHaveWonPct =
+                        "> 60% means your gates may be too strict. " +
+                        "Consider loosening the highest-count rejection reason.",
+                    targetOptimization =
+                        "After 50+ rejections: if top reason win rate > 60%, " +
+                        "that gate is a false positive filter."
+                },
+                generatedAt = DateTime.Now
             });
         }
 
