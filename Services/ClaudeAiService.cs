@@ -360,20 +360,23 @@ Respond ONLY in this JSON (no markdown, no preamble):
                 return Avoid($"Only {minsToClose} min to close — too late");
 
             // ── All rules passed → BUY ─────────────────
-            // Slippage-adjusted prices (realistic market order fills)
-            // Entry: +0.10% (market order fills worse than LTP)
-            // Target: -0.10% (exit fills worse)
-            // SL: -0.05% (SL trigger fills slightly below)
+            // Price-sensitive slippage (realistic market order fills)
             double rawEntry = stock.LastPrice;
-            double entry    = rawEntry * 1.0010; // +0.10% slippage
+            double (slipE, slipT, slipSL) = rawEntry switch
+            {
+                < 100  => (0.0020, 0.0020, 0.0010),
+                < 300  => (0.0010, 0.0010, 0.0005),
+                _      => (0.0005, 0.0005, 0.0003)
+            };
+            double entry = rawEntry * (1 + slipE);
 
             double sl, target;
             if (tech.ATR > 0)
             {
                 double rawSL     = rawEntry - (tech.ATR * 0.75);
                 double rawTarget = rawEntry + (tech.ATR * 2.0);
-                sl     = rawSL     * 0.9995; // -0.05%
-                target = rawTarget * 0.9990; // -0.10%
+                sl     = rawSL     * (1 - slipSL);
+                target = rawTarget * (1 - slipT);
             }
             else
             {
