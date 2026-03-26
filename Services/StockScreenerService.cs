@@ -1,4 +1,4 @@
-﻿using AlgoSenseNSE.API.Models;
+using AlgoSenseNSE.API.Models;
 
 namespace AlgoSenseNSE.API.Services
 {
@@ -45,19 +45,19 @@ namespace AlgoSenseNSE.API.Services
         };
 
         // ── Minimum quality thresholds ────────────────
-        private const double MinPrice = 15.0;   // ₹15 minimum
-        private const double MaxPrice = 800.0;  // ₹800 maximum
-        private const long MinVolume = 200000; // 2 lakh shares/day
-        private const int MinSharesNeeded = 5;    // must buy 5+ shares
-        private const double MinMovePercent = 0.5;  // at least 0.5% move
-        private const double MinVolumeRatio = 1.5;  // 1.5x average volume
+        private const double MinPrice      = 15.0;   // ₹15 minimum
+        private const double MaxPrice      = 800.0;  // ₹800 maximum
+        private const long   MinVolume     = 200000; // 2 lakh shares/day
+        private const int    MinSharesNeeded = 5;    // must buy 5+ shares
+        private const double MinMovePercent  = 0.5;  // at least 0.5% move
+        private const double MinVolumeRatio  = 1.5;  // 1.5x average volume
 
         public StockScreenerService(
             AngelOneWebSocketService ws,
             ILogger<StockScreenerService> logger,
             IConfiguration config)
         {
-            _ws = ws;
+            _ws     = ws;
             _logger = logger;
             _config = config;
         }
@@ -71,10 +71,9 @@ namespace AlgoSenseNSE.API.Services
 
             var screened = new List<ScreenedStock>();
 
-            foreach (var kv in allTicks)
+            foreach (var tick in allTicks)
             {
-                var sym = kv.Key;
-                var tick = kv.Value;
+                var sym = tick.Symbol;
 
                 // Skip blacklisted
                 if (Blacklist.Contains(sym)) continue;
@@ -99,18 +98,18 @@ namespace AlgoSenseNSE.API.Services
 
                 screened.Add(new ScreenedStock
                 {
-                    Symbol = sym,
-                    Price = tick.LTP,
-                    Change = tick.LTP - tick.Close,
+                    Symbol        = sym,
+                    Price         = tick.LTP,
+                    Change        = tick.LTP - tick.Close,
                     ChangePercent = tick.ChangePercent,
-                    Volume = tick.Volume,
-                    High = tick.High,
-                    Low = tick.Low,
-                    Open = tick.Open,
-                    PrevClose = tick.Close,
+                    Volume        = tick.Volume,
+                    High          = tick.High,
+                    Low           = tick.Low,
+                    Open          = tick.Open,
+                    PrevClose     = tick.Close,
                     AffordableShares = shares,
                     MomentumScore = momentumScore,
-                    ScreenedAt = DateTime.Now
+                    ScreenedAt    = DateTime.Now
                 });
             }
 
@@ -122,8 +121,8 @@ namespace AlgoSenseNSE.API.Services
 
             lock (_lock)
             {
-                _candidates = sorted;
-                _lastScreened = DateTime.Now;
+                _candidates    = sorted;
+                _lastScreened  = DateTime.Now;
             }
 
             _logger.LogInformation(
@@ -189,7 +188,7 @@ namespace AlgoSenseNSE.API.Services
             double score = 0;
 
             // 1. Price change momentum
-            if (tick.ChangePercent > 3.0) score += 30;
+            if (tick.ChangePercent > 3.0)      score += 30;
             else if (tick.ChangePercent > 2.0) score += 20;
             else if (tick.ChangePercent > 1.0) score += 10;
             else if (tick.ChangePercent > 0.5) score += 5;
@@ -197,7 +196,7 @@ namespace AlgoSenseNSE.API.Services
 
             // 2. Volume momentum
             // We don't have 20-day avg here, use absolute volume
-            if (tick.Volume > 5_000_000) score += 20;
+            if (tick.Volume > 5_000_000)      score += 20;
             else if (tick.Volume > 2_000_000) score += 10;
             else if (tick.Volume > 1_000_000) score += 5;
 
@@ -215,8 +214,8 @@ namespace AlgoSenseNSE.API.Services
             // Price near high of day = strong momentum
             if (tick.High > tick.Low && tick.LTP > 0)
             {
-                double range = tick.High - tick.Low;
-                double position = tick.LTP - tick.Low;
+                double range     = tick.High - tick.Low;
+                double position  = tick.LTP  - tick.Low;
                 double pctInRange = range > 0
                     ? (position / range) * 100 : 50;
 
@@ -227,7 +226,7 @@ namespace AlgoSenseNSE.API.Services
 
             // 5. Affordable bonus — more shares = more profit potential
             int shares = (int)(1500 * 0.60 / Math.Max(tick.LTP, 1));
-            if (shares >= 20) score += 10; // cheap stock, many shares
+            if (shares >= 20)      score += 10; // cheap stock, many shares
             else if (shares >= 10) score += 5;
 
             return score;
@@ -237,17 +236,17 @@ namespace AlgoSenseNSE.API.Services
     // ── Screened Stock Model ──────────────────────────
     public class ScreenedStock
     {
-        public string Symbol { get; set; } = "";
-        public double Price { get; set; }
-        public double Change { get; set; }
-        public double ChangePercent { get; set; }
-        public long Volume { get; set; }
-        public double High { get; set; }
-        public double Low { get; set; }
-        public double Open { get; set; }
-        public double PrevClose { get; set; }
-        public int AffordableShares { get; set; }
-        public double MomentumScore { get; set; }
-        public DateTime ScreenedAt { get; set; }
+        public string   Symbol           { get; set; } = "";
+        public double   Price            { get; set; }
+        public double   Change           { get; set; }
+        public double   ChangePercent    { get; set; }
+        public long     Volume           { get; set; }
+        public double   High             { get; set; }
+        public double   Low              { get; set; }
+        public double   Open             { get; set; }
+        public double   PrevClose        { get; set; }
+        public int      AffordableShares { get; set; }
+        public double   MomentumScore    { get; set; }
+        public DateTime ScreenedAt       { get; set; }
     }
 }
