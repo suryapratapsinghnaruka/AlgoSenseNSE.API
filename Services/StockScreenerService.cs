@@ -3,70 +3,68 @@ using AlgoSenseNSE.API.Models;
 namespace AlgoSenseNSE.API.Services
 {
     /// <summary>
-    /// Dynamic Stock Screener
+    /// StockScreenerService v2 — Dynamic universe based on capital budget.
     ///
-    /// Reads live ticks from WebSocket for ALL NSE/BSE stocks.
-    /// Every 30 seconds filters down to today's best candidates.
+    /// v1: hardcoded 53 stocks
+    /// v2: scans all WebSocket ticks and returns every stock affordable
+    ///     with current capital. Universe changes daily as prices move.
     ///
-    /// Replaces the hardcoded _intradayStocks list entirely.
+    /// Budget filter:
+    ///   maxPrice = availableCapital / minShares (default 5)
+    ///   minPrice = 15 (avoid penny stocks)
+    ///   minVolume = 200,000 (liquidity gate)
     ///
-    /// Filters applied:
-    ///   1. Price ₹15-₹800 (affordable with ₹1,500 capital)
-    ///   2. Volume > 2 lakh (liquid enough to trade)
-    ///   3. Moving today (>1% change OR 2x volume spike)
-    ///   4. Not in blacklist (known operator stocks)
-    ///   5. Has valid token in Angel One
-    ///
-    /// Output: top 100 candidates → passed to MarketScanService
+    /// Output tiers:
+    ///   Tier 1 (deep analysis): top 80 by volume — fundamental + technical
+    ///   Tier 2 (screener only): remaining candidates — live price watch only
     /// </summary>
     public class StockScreenerService
     {
         private readonly AngelOneWebSocketService _ws;
-        private readonly ILogger<StockScreenerService> _logger;
         private readonly IConfiguration _config;
+        private readonly ILogger<StockScreenerService> _logger;
 
-        // Current screened candidates
         private List<ScreenedStock> _candidates = new();
-        private DateTime _lastScreened = DateTime.MinValue;
         private readonly object _lock = new();
+        private DateTime _lastScreen = DateTime.MinValue;
 
-        // Capital config
-        private double Capital => _config.GetValue<double>(
-            "Trading:Capital", 1500);
-
-        // ── Blacklist — known operator/manipulated stocks ─
-        private static readonly HashSet<string> Blacklist = new()
+        // Blacklist: indices, ETFs, operator stocks
+        private static readonly HashSet<string> Blacklist = new(
+            StringComparer.OrdinalIgnoreCase)
         {
-            // Add known operator stocks here
-            // These will never be recommended regardless of signals
-            "YESBANK",  // history of manipulation
-            "RCOM",     // bankrupt
-            "SUZLON",   // highly volatile penny
+            "NIFTY","BANKNIFTY","FINNIFTY","MIDCPNIFTY",
+            "SENSEX","BANKEX",
+            "NIFTYBEES","JUNIORBEES","BANKBEES","LIQUIDBEES",
+            "ICICIB22","HDFCNIFTY","SETFNIF50",
         };
 
-        // ── Minimum quality thresholds ────────────────
-        private const double MinPrice      = 15.0;   // ₹15 minimum
-        private const double MaxPrice      = 800.0;  // ₹800 maximum
-        private const long   MinVolume     = 200000; // 2 lakh shares/day
-        private const int    MinSharesNeeded = 5;    // must buy 5+ shares
-        private const double MinMovePercent  = 0.5;  // at least 0.5% move
-        private const double MinVolumeRatio  = 1.5;  // 1.5x average volume
+        // Minimum shares to buy — ensures enough qty for brokerage to make sense
+        private const int MinSharesNeeded = 5;
 
         public StockScreenerService(
             AngelOneWebSocketService ws,
-            ILogger<StockScreenerService> logger,
-            IConfiguration config)
+            IConfiguration config,
+            ILogger<StockScreenerService> logger)
         {
             _ws     = ws;
-            _logger = logger;
             _config = config;
+            _logger = logger;
         }
 
-        // ── Main screen — runs every 30 seconds ───────
+        // ── Main screen ───────────────────────────────
+        // Returns stocks affordable with current available capital
         public List<ScreenedStock> Screen()
         {
-            var allTicks = _ws.GetAllTicks();
+            var capital   = _config.GetValue<double>("Trading:Capital", 1500);
+            var reserved  = capital * 0.40;
+            var available = capital - reserved;
 
+            // Max price = what we can afford for MinSharesNeeded shares
+            double maxPrice = available / MinSharesNeeded;
+            double minPrice = 15.0;
+            long   minVol   = 200_000;
+
+            var allTicks = _ws.GetAllTicks();
             if (!allTicks.Any()) return _candidates;
 
             var screened = new List<ScreenedStock>();
@@ -78,175 +76,177 @@ namespace AlgoSenseNSE.API.Services
                 // Skip blacklisted
                 if (Blacklist.Contains(sym)) continue;
 
-                // Price filter
-                if (tick.LTP < MinPrice ||
-                    tick.LTP > MaxPrice) continue;
+                // Skip stale ticks (> 5 min old during market hours)
+                if ((DateTime.Now - tick.LastUpdated).TotalMinutes > 5
+                    && IsMarketHours()) continue;
 
-                // Volume filter
-                if (tick.Volume < MinVolume) continue;
+                // ── Budget filter ─────────────────────
+                // Only include stocks we can actually buy with our capital
+                if (tick.LTP < minPrice) continue;
+                if (tick.LTP > maxPrice) continue;
 
-                // Can we buy enough shares?
-                int shares = (int)(Capital * 0.60 / tick.LTP);
+                // ── Liquidity filter ──────────────────
+                if (tick.Volume < minVol) continue;
+
+                // ── Affordability check ───────────────
+                int shares = (int)(available / tick.LTP);
                 if (shares < MinSharesNeeded) continue;
 
-                // Skip stale ticks (> 5 min old)
-                if ((DateTime.Now - tick.LastUpdated)
-                    .TotalMinutes > 5) continue;
-
-                // Calculate momentum score
+                // ── Momentum score ────────────────────
                 double momentumScore = CalculateMomentumScore(tick);
 
                 screened.Add(new ScreenedStock
                 {
                     Symbol        = sym,
-                    Price         = tick.LTP,
-                    Change        = tick.LTP - tick.Close,
-                    ChangePercent = tick.ChangePercent,
+                    LTP           = tick.LTP,
                     Volume        = tick.Volume,
-                    High          = tick.High,
-                    Low           = tick.Low,
-                    Open          = tick.Open,
-                    PrevClose     = tick.Close,
-                    AffordableShares = shares,
+                    ChangePercent = tick.ChangePercent,
+                    AffordableQty = shares,
+                    MaxCapNeeded  = Math.Round(shares * tick.LTP, 0),
                     MomentumScore = momentumScore,
-                    ScreenedAt    = DateTime.Now
+                    LastUpdated   = tick.LastUpdated
                 });
             }
 
-            // Sort by momentum score — best candidates first
+            // Sort by volume (most liquid first) + momentum bonus
             var sorted = screened
-                .OrderByDescending(s => s.MomentumScore)
-                .Take(150) // keep top 150
+                .OrderByDescending(s => s.Volume * 0.6 + s.MomentumScore * 0.4)
                 .ToList();
+
+            // Tag tiers
+            for (int i = 0; i < sorted.Count; i++)
+                sorted[i].Tier = i < 80 ? 1 : 2;
 
             lock (_lock)
             {
-                _candidates    = sorted;
-                _lastScreened  = DateTime.Now;
+                _candidates  = sorted;
+                _lastScreen  = DateTime.Now;
             }
 
             _logger.LogInformation(
-                "📊 Screener: {total} stocks → {screened} " +
-                "candidates (price ₹{min}-₹{max}, vol>{vol})",
-                allTicks.Count, sorted.Count,
-                MinPrice, MaxPrice, MinVolume);
+                "📊 Dynamic universe: {total} affordable stocks " +
+                "(₹{min}–₹{max}, vol>2L) → T1:{t1} T2:{t2}",
+                sorted.Count,
+                Math.Round(minPrice),
+                Math.Round(maxPrice),
+                sorted.Count(s => s.Tier == 1),
+                sorted.Count(s => s.Tier == 2));
 
             return sorted;
         }
 
-        // ── Get top N candidates for morning scan ─────
-        public List<string> GetTopSymbols(int count = 100)
+        // ── Get Tier 1 symbols for deep analysis ──────
+        // These replace the hardcoded 53-stock list
+        public List<string> GetTier1Symbols(int limit = 80)
         {
             lock (_lock)
             {
                 return _candidates
-                    .Take(count)
+                    .Where(s => s.Tier == 1)
+                    .Take(limit)
                     .Select(s => s.Symbol)
                     .ToList();
             }
         }
 
-        // ── Get top gainers ───────────────────────────
-        public List<ScreenedStock> GetTopGainers(int count = 20)
+        // ── Get all affordable symbols ─────────────────
+        public List<string> GetAllAffordableSymbols()
         {
             lock (_lock)
             {
                 return _candidates
-                    .Where(s => s.ChangePercent > 0)
-                    .OrderByDescending(s => s.ChangePercent)
-                    .Take(count)
+                    .Select(s => s.Symbol)
                     .ToList();
             }
         }
 
-        // ── Get volume spikes ─────────────────────────
-        public List<ScreenedStock> GetVolumeSpikes(int count = 20)
+        // ── Summary for API ───────────────────────────
+        public ScreenerSummary GetSummary()
         {
             lock (_lock)
             {
-                return _candidates
-                    .OrderByDescending(s => s.Volume)
-                    .Take(count)
-                    .ToList();
+                var capital   = _config.GetValue<double>("Trading:Capital", 1500);
+                var available = capital * 0.60;
+                return new ScreenerSummary
+                {
+                    TotalAffordable   = _candidates.Count,
+                    Tier1ForAnalysis  = _candidates.Count(s => s.Tier == 1),
+                    Tier2WatchOnly    = _candidates.Count(s => s.Tier == 2),
+                    MaxAffordablePrice = Math.Round(available / MinSharesNeeded, 0),
+                    MinPrice          = 15,
+                    Capital           = capital,
+                    AvailableCapital  = available,
+                    LastUpdated       = _lastScreen,
+                    TopCandidates     = _candidates.Take(20).ToList()
+                };
             }
         }
 
-        // ── Get all candidates ────────────────────────
-        public List<ScreenedStock> GetCandidates()
-        {
-            lock (_lock) { return new List<ScreenedStock>(_candidates); }
-        }
-
-        public int CandidateCount
-        {
-            get { lock (_lock) { return _candidates.Count; } }
-        }
-
-        // ── Momentum score calculation ─────────────────
+        // ── Momentum score (0–100) ────────────────────
         private double CalculateMomentumScore(LiveTick tick)
         {
-            double score = 0;
+            double score = 50;
 
-            // 1. Price change momentum
-            if (tick.ChangePercent > 3.0)      score += 30;
-            else if (tick.ChangePercent > 2.0) score += 20;
-            else if (tick.ChangePercent > 1.0) score += 10;
-            else if (tick.ChangePercent > 0.5) score += 5;
-            else if (tick.ChangePercent < -2.0) score -= 10;
+            // Price change direction
+            if (tick.ChangePercent > 2.0) score += 20;
+            else if (tick.ChangePercent > 1.0) score += 12;
+            else if (tick.ChangePercent > 0.3) score += 6;
+            else if (tick.ChangePercent < -2.0) score -= 20;
+            else if (tick.ChangePercent < -1.0) score -= 12;
 
-            // 2. Volume momentum
-            // We don't have 20-day avg here, use absolute volume
-            if (tick.Volume > 5_000_000)      score += 20;
-            else if (tick.Volume > 2_000_000) score += 10;
-            else if (tick.Volume > 1_000_000) score += 5;
+            // Price vs open (intraday trend)
+            if (tick.Open > 0 && tick.LTP > tick.Open * 1.005) score += 10;
+            else if (tick.Open > 0 && tick.LTP < tick.Open * 0.995) score -= 10;
 
-            // 3. Price range (today's range as % of price)
-            if (tick.High > 0 && tick.Low > 0 && tick.LTP > 0)
-            {
-                double rangePct =
-                    (tick.High - tick.Low) / tick.LTP * 100;
-                if (rangePct > 3.0) score += 15; // volatile = opportunity
-                else if (rangePct > 2.0) score += 8;
-                else if (rangePct > 1.0) score += 4;
-            }
+            // Near high (momentum continuing)
+            if (tick.High > 0 && tick.LTP >= tick.High * 0.99) score += 10;
 
-            // 4. Position in day range
-            // Price near high of day = strong momentum
-            if (tick.High > tick.Low && tick.LTP > 0)
-            {
-                double range     = tick.High - tick.Low;
-                double position  = tick.LTP  - tick.Low;
-                double pctInRange = range > 0
-                    ? (position / range) * 100 : 50;
+            // Volume spike proxy — high volume = institutional interest
+            // (we don't have avg here, so use absolute thresholds)
+            if (tick.Volume > 1_000_000) score += 10;
+            else if (tick.Volume > 500_000) score += 5;
 
-                if (pctInRange > 75) score += 15; // near day high
-                else if (pctInRange > 50) score += 8;
-                else if (pctInRange < 25) score -= 10; // near day low
-            }
+            return Math.Max(0, Math.Min(100, score));
+        }
 
-            // 5. Affordable bonus — more shares = more profit potential
-            int shares = (int)(1500 * 0.60 / Math.Max(tick.LTP, 1));
-            if (shares >= 20)      score += 10; // cheap stock, many shares
-            else if (shares >= 10) score += 5;
+        private bool IsMarketHours()
+        {
+            var ist = DateTime.UtcNow.AddHours(5).AddMinutes(30);
+            return ist.DayOfWeek != DayOfWeek.Saturday
+                && ist.DayOfWeek != DayOfWeek.Sunday
+                && ist.TimeOfDay >= new TimeSpan(9, 15, 0)
+                && ist.TimeOfDay <= new TimeSpan(15, 30, 0);
+        }
 
-            return score;
+        public List<ScreenedStock> GetCandidates()
+        {
+            lock (_lock) { return _candidates.ToList(); }
         }
     }
 
-    // ── Screened Stock Model ──────────────────────────
     public class ScreenedStock
     {
-        public string   Symbol           { get; set; } = "";
-        public double   Price            { get; set; }
-        public double   Change           { get; set; }
-        public double   ChangePercent    { get; set; }
-        public long     Volume           { get; set; }
-        public double   High             { get; set; }
-        public double   Low              { get; set; }
-        public double   Open             { get; set; }
-        public double   PrevClose        { get; set; }
-        public int      AffordableShares { get; set; }
-        public double   MomentumScore    { get; set; }
-        public DateTime ScreenedAt       { get; set; }
+        public string   Symbol        { get; set; } = "";
+        public double   LTP           { get; set; }
+        public long     Volume        { get; set; }
+        public double   ChangePercent { get; set; }
+        public int      AffordableQty { get; set; }
+        public double   MaxCapNeeded  { get; set; }
+        public double   MomentumScore { get; set; }
+        public int      Tier          { get; set; } = 2;
+        public DateTime LastUpdated   { get; set; }
+    }
+
+    public class ScreenerSummary
+    {
+        public int    TotalAffordable    { get; set; }
+        public int    Tier1ForAnalysis   { get; set; }
+        public int    Tier2WatchOnly     { get; set; }
+        public double MaxAffordablePrice { get; set; }
+        public double MinPrice           { get; set; }
+        public double Capital            { get; set; }
+        public double AvailableCapital   { get; set; }
+        public DateTime LastUpdated      { get; set; }
+        public List<ScreenedStock> TopCandidates { get; set; } = new();
     }
 }
