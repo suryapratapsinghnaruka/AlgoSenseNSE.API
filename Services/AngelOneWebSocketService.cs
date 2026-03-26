@@ -1,4 +1,4 @@
-﻿using System.Net.WebSockets;
+using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using AlgoSenseNSE.API.Models;
@@ -6,19 +6,14 @@ using AlgoSenseNSE.API.Models;
 namespace AlgoSenseNSE.API.Services
 {
     /// <summary>
-    /// Angel One SmartAPI WebSocket v2
+    /// Angel One SmartAPI WebSocket V2
+    /// Per official Python SDK:
+    /// github.com/angel-one/smartapi-python/blob/main/SmartApi/smartWebSocketV2.py
     ///
-    /// Streams live tick data for ALL subscribed tokens simultaneously.
-    /// No rate limits. No polling. One connection handles everything.
-    ///
-    /// Docs: https://smartapi.angelbroking.com/docs/WebSocket2
-    ///
-    /// Flow:
-    ///   1. AngelOneService.Login() → saves jwtToken + feedToken
-    ///   2. This service connects with those credentials
-    ///   3. Subscribe all NSE/BSE tokens in batches of 50
-    ///   4. Exchange pushes ticks → OnPriceUpdate fires
-    ///   5. StockScreenerService reads live prices → filters candidates
+    /// Auth: 4 HTTP headers at handshake (no Bearer prefix on Authorization)
+    /// Heartbeat: send "ping" every 10s, server responds "pong"
+    /// Binary: little-endian, token at bytes 2-27, LTP at 43-51 / 100
+    /// Max 1000 tokens per session, max 3 concurrent connections
     /// </summary>
     public class AngelOneWebSocketService : IDisposable
     {
@@ -27,86 +22,107 @@ namespace AlgoSenseNSE.API.Services
 
         private ClientWebSocket? _ws;
         private CancellationTokenSource _cts = new();
-        private bool _isConnected = false;
-        private bool _disposed = false;
+        private bool _isConnected  = false;
+        private bool _disposed     = false;
         private bool _reconnecting = false;
 
-        // Auth credentials
-        private string _jwtToken = "";
+        private string _jwtToken  = "";
         private string _feedToken = "";
-        private string _clientId = "";
-        private string _apiKey = "";
+        private string _clientId  = "";
+        private string _apiKey    = "";
 
-        // Token management
+        private readonly Dictionary<string, string> _symbolToToken = new();
+        private readonly Dictionary<string, string> _tokenToSymbol = new();
         private readonly HashSet<string> _nseTokens = new();
         private readonly HashSet<string> _bseTokens = new();
 
-        // Live price store — token → price data
         private readonly Dictionary<string, LiveTick> _ticks = new();
-        private readonly Dictionary<string, string> _tokenToSymbol = new();
-        private readonly Dictionary<string, string> _symbolToToken = new();
         private readonly object _lock = new();
 
-        // Events
         public event Action<string, LiveTick>? OnTickUpdate;
-        public event Action? OnConnected;
-        public event Action<string>? OnDisconnected;
+        public event Action?                   OnConnected;
+        public event Action<string>?           OnDisconnected;
 
-        // Angel One WebSocket URL
-        private const string WsUrl =
-            "wss://smartapisocket.angelbroking.com/smart-stream";
+        // ✅ CORRECT URL — angelone.in not angelbroking.com
+        private const string WsUrl            = "wss://smartapisocket.angelone.in/smart-stream";
+        private const string HeartBeatMessage = "ping";
+        private const int    HeartBeatInterval = 10; // seconds per official SDK
 
-        // Exchange type codes
-        private const int NSE_CM = 1; // NSE Cash Market
-        private const int BSE_CM = 3; // BSE Cash Market
+        private const int LTP_MODE   = 1;
+        private const int QUOTE      = 2;
+        private const int SNAP_QUOTE = 3;
+        private const int NSE_CM     = 1;
+        private const int BSE_CM     = 3;
+        private const int SUBSCRIBE_ACTION   = 1;
+        private const int UNSUBSCRIBE_ACTION = 0;
 
         public bool IsConnected => _isConnected;
-        public int TickCount => _ticks.Count;
+        public int  TickCount   => _ticks.Count;
 
         public AngelOneWebSocketService(
             ILogger<AngelOneWebSocketService> logger,
             IConfiguration config)
         {
-            _logger = logger;
-            _config = config;
-            _apiKey = config["AngelOne:ApiKey"] ?? "";
+            _logger   = logger;
+            _config   = config;
+            _apiKey   = config["AngelOne:ApiKey"]   ?? "";
             _clientId = config["AngelOne:ClientId"] ?? "";
         }
 
-        // ── Set credentials after login ───────────────
         public void SetCredentials(
-            string jwtToken,
-            string feedToken,
-            string clientId = "")
+            string jwtToken, string feedToken, string clientId = "")
         {
-            _jwtToken = jwtToken;
+            _jwtToken  = jwtToken;
             _feedToken = feedToken;
-            if (!string.IsNullOrEmpty(clientId))
-                _clientId = clientId;
-
-            _logger.LogInformation(
-                "✅ WebSocket credentials set");
+            if (!string.IsNullOrEmpty(clientId)) _clientId = clientId;
+            _logger.LogInformation("✅ WebSocket credentials set");
         }
 
-        // ── Register symbol ↔ token mapping ───────────
         public void RegisterTokens(
-            Dictionary<string, string> symbolToToken,
-            bool isNse = true)
+            Dictionary<string, string> symbolToToken, bool isNse = true)
         {
             lock (_lock)
             {
                 foreach (var kv in symbolToToken)
                 {
-                    _symbolToToken[kv.Key] = kv.Value;
+                    _symbolToToken[kv.Key]   = kv.Value;
                     _tokenToSymbol[kv.Value] = kv.Key;
-
                     if (isNse) _nseTokens.Add(kv.Value);
-                    else _bseTokens.Add(kv.Value);
+                    else       _bseTokens.Add(kv.Value);
                 }
             }
             _logger.LogInformation(
-                "📋 Registered {n} tokens for WebSocket",
+                "📋 Registered {n} {ex} tokens for WebSocket",
+                symbolToToken.Count, isNse ? "NSE" : "BSE");
+        }
+
+        // ✅ THE FIX: clears old data and reloads from complete map
+        public void RegisterTokensFromMap(
+            Dictionary<string, string> symbolToToken)
+        {
+            lock (_lock)
+            {
+                _nseTokens.Clear();
+                _symbolToToken.Clear();
+                _tokenToSymbol.Clear();
+
+                foreach (var kv in symbolToToken)
+                {
+                    _symbolToToken[kv.Key]   = kv.Value;
+                    _tokenToSymbol[kv.Value] = kv.Key;
+                    _nseTokens.Add(kv.Value);
+                }
+            }
+            _logger.LogInformation(
+                "📋 Token map loaded into WebSocket: {n} symbols",
                 symbolToToken.Count);
+        }
+
+        public async Task ResubscribeAsync()
+        {
+            if (!_isConnected) return;
+            _logger.LogInformation("📡 Re-subscribing all tokens...");
+            await SubscribeAllAsync();
         }
 
         // ── Connect ───────────────────────────────────
@@ -115,8 +131,7 @@ namespace AlgoSenseNSE.API.Services
             if (string.IsNullOrEmpty(_jwtToken) ||
                 string.IsNullOrEmpty(_feedToken))
             {
-                _logger.LogWarning(
-                    "⚠️ WebSocket: credentials not set");
+                _logger.LogWarning("⚠️ WS: missing credentials");
                 return;
             }
 
@@ -127,36 +142,28 @@ namespace AlgoSenseNSE.API.Services
                 _ws?.Dispose();
                 _ws = new ClientWebSocket();
 
-                // Angel One auth headers
-                _ws.Options.SetRequestHeader(
-                    "Authorization", $"Bearer {_jwtToken}");
-                _ws.Options.SetRequestHeader(
-                    "x-api-key", _apiKey);
-                _ws.Options.SetRequestHeader(
-                    "x-client-code", _clientId);
-                _ws.Options.SetRequestHeader(
-                    "x-feed-token", _feedToken);
+                // ✅ CORRECT HEADERS per official Python SDK:
+                // Authorization = raw JWT (NO "Bearer" prefix)
+                // "Bearer" prefix invalidates the REST token
+                _ws.Options.SetRequestHeader("Authorization", _jwtToken);
+                _ws.Options.SetRequestHeader("x-api-key",     _apiKey);
+                _ws.Options.SetRequestHeader("x-client-code", _clientId);
+                _ws.Options.SetRequestHeader("x-feed-token",  _feedToken);
 
-                _logger.LogInformation(
-                    "🔌 Connecting Angel One WebSocket...");
+                _logger.LogInformation("🔌 Connecting Angel One WebSocket...");
 
-                await _ws.ConnectAsync(
-                    new Uri(WsUrl), _cts.Token);
+                await _ws.ConnectAsync(new Uri(WsUrl), _cts.Token);
 
-                _isConnected = true;
+                _isConnected  = true;
                 _reconnecting = false;
 
-                _logger.LogInformation(
-                    "✅ Angel One WebSocket connected");
-
+                _logger.LogInformation("✅ Angel One WebSocket connected");
                 OnConnected?.Invoke();
 
-                // Subscribe all registered tokens
                 await SubscribeAllAsync();
 
-                // Start receive + heartbeat loops
-                _ = Task.Run(ReceiveLoopAsync);
-                _ = Task.Run(HeartbeatLoopAsync);
+                _ = Task.Run(ReceiveLoopAsync, _cts.Token);
+                _ = Task.Run(HeartbeatLoopAsync, _cts.Token);
             }
             catch (Exception ex)
             {
@@ -167,108 +174,90 @@ namespace AlgoSenseNSE.API.Services
             }
         }
 
-        // ── Subscribe all tokens ──────────────────────
         private async Task SubscribeAllAsync()
         {
             List<string> nseList, bseList;
             lock (_lock)
             {
-                nseList = _nseTokens.ToList();
-                bseList = _bseTokens.ToList();
+                nseList = _nseTokens.Take(800).ToList();
+                bseList = _bseTokens.Take(200).ToList();
             }
 
             if (nseList.Any())
+            {
+                _logger.LogInformation(
+                    "📡 Subscribing {n} NSE tokens...", nseList.Count);
                 await SubscribeBatchAsync(nseList, NSE_CM);
+            }
 
             if (bseList.Any())
+            {
+                _logger.LogInformation(
+                    "📡 Subscribing {n} BSE tokens...", bseList.Count);
                 await SubscribeBatchAsync(bseList, BSE_CM);
+            }
 
             _logger.LogInformation(
                 "✅ Subscribed: NSE={nse} BSE={bse} tokens",
                 nseList.Count, bseList.Count);
         }
 
-        // ── Subscribe batch of tokens ─────────────────
-        // Angel One accepts max 50 tokens per subscribe message
         private async Task SubscribeBatchAsync(
             List<string> tokens, int exchangeType)
         {
             const int batchSize = 50;
-
             for (int i = 0; i < tokens.Count; i += batchSize)
             {
-                var batch = tokens
-                    .Skip(i).Take(batchSize).ToList();
-
-                var msg = new
+                var batch   = tokens.Skip(i).Take(batchSize).ToList();
+                var request = new
                 {
-                    correlationID = Guid.NewGuid()
-                        .ToString()[..8],
-                    action = 1, // 1=subscribe, 0=unsubscribe
-                    @params = new
+                    correlationID = $"sub_{exchangeType}_{i}",
+                    action        = SUBSCRIBE_ACTION,
+                    @params       = new
                     {
-                        mode = 3, // 3=SNAP_QUOTE (full data)
+                        mode      = QUOTE, // mode 2 = LTP + OHLC + Volume
                         tokenList = new[]
                         {
-                            new
-                            {
-                                exchangeType,
-                                tokens = batch
-                            }
+                            new { exchangeType, tokens = batch }
                         }
                     }
                 };
-
-                await SendAsync(JsonSerializer.Serialize(msg));
-                await Task.Delay(100); // small delay between batches
+                await SendTextAsync(JsonSerializer.Serialize(request));
+                await Task.Delay(50, _cts.Token);
             }
         }
 
-        // ── Receive loop ──────────────────────────────
         private async Task ReceiveLoopAsync()
         {
             var buffer = new byte[4096];
-
             try
             {
                 while (_isConnected &&
                        !_cts.Token.IsCancellationRequested)
                 {
                     var result = await _ws!.ReceiveAsync(
-                        new ArraySegment<byte>(buffer),
-                        _cts.Token);
+                        new ArraySegment<byte>(buffer), _cts.Token);
 
-                    if (result.MessageType ==
-                        WebSocketMessageType.Close)
+                    if (result.MessageType == WebSocketMessageType.Close)
                     {
-                        _logger.LogWarning(
-                            "⚠️ WebSocket closed by server");
+                        _logger.LogWarning("⚠️ WebSocket closed by server");
                         break;
                     }
 
-                    if (result.MessageType ==
-                        WebSocketMessageType.Binary)
+                    if (result.MessageType == WebSocketMessageType.Binary)
+                        ParseBinaryData(buffer.Take(result.Count).ToArray());
+                    else if (result.MessageType == WebSocketMessageType.Text)
                     {
-                        // Angel One sends binary data
-                        var data = buffer
-                            .Take(result.Count).ToArray();
-                        ParseBinaryTick(data);
-                    }
-                    else if (result.MessageType ==
-                             WebSocketMessageType.Text)
-                    {
-                        var text = Encoding.UTF8.GetString(
-                            buffer, 0, result.Count);
-                        ParseTextMessage(text);
+                        var text = Encoding.UTF8.GetString(buffer, 0, result.Count);
+                        if (text.Trim() != "pong")
+                            _logger.LogDebug("WS text: {t}", text);
                     }
                 }
             }
             catch (OperationCanceledException) { }
             catch (Exception ex)
             {
-                _logger.LogWarning(
-                    "⚠️ WebSocket receive error: {msg}",
-                    ex.Message);
+                _logger.LogWarning("⚠️ WS receive error: {msg}", ex.Message);
             }
             finally
             {
@@ -278,179 +267,138 @@ namespace AlgoSenseNSE.API.Services
             }
         }
 
-        // ── Parse binary tick data ────────────────────
-        // Angel One WebSocket v2 binary format:
-        // Byte 0:    Subscribe mode
-        // Byte 1-2:  Exchange type
-        // Byte 3-27: Token (padded)
-        // Byte 27-35: Sequence number
-        // Byte 35-43: Exchange timestamp
-        // Byte 43-51: LTP (last traded price × 100)
-        // Byte 51-59: LTQ (last traded qty)
-        // ... more fields follow for SNAP_QUOTE mode
-        private void ParseBinaryTick(byte[] data)
+        // ── Binary parser per official SDK byte layout ─
+        // _parse_binary_data() in smartWebSocketV2.py
+        private void ParseBinaryData(byte[] data)
         {
             try
             {
                 if (data.Length < 51) return;
 
-                // Extract subscription mode (byte 0)
-                byte mode = data[0];
+                byte mode         = data[0];  // subscription_mode
+                byte exchangeType = data[1];  // exchange_type
 
-                // Extract exchange type (bytes 1-2)
-                short exchangeType = BitConverter
-                    .ToInt16(data, 1);
-
-                // Extract token (bytes 3-27, null-terminated)
-                var tokenBytes = data.Skip(3).Take(24).ToArray();
-                var tokenStr = Encoding.ASCII
-                    .GetString(tokenBytes)
-                    .TrimEnd('\0').Trim();
-
+                // bytes 2-27: token ASCII null-terminated (25 bytes)
+                var tokenStr = "";
+                for (int i = 2; i < 27 && i < data.Length; i++)
+                {
+                    if (data[i] == 0) break;
+                    tokenStr += (char)data[i];
+                }
+                tokenStr = tokenStr.Trim();
                 if (string.IsNullOrEmpty(tokenStr)) return;
 
-                // LTP at bytes 43-51 (int64, divide by 100)
-                long ltpRaw = BitConverter.ToInt64(data, 43);
-                double ltp = ltpRaw / 100.0;
-
+                // bytes 43-51: LTP int64 little-endian / 100
+                long   ltpRaw = BitConverter.ToInt64(data, 43);
+                double ltp    = ltpRaw / 100.0;
                 if (ltp <= 0) return;
 
-                // Get symbol for this token
                 string symbol;
                 lock (_lock)
                 {
-                    if (!_tokenToSymbol.TryGetValue(
-                        tokenStr, out symbol!))
-                        symbol = tokenStr; // use token as fallback
+                    if (!_tokenToSymbol.TryGetValue(tokenStr, out symbol!))
+                        symbol = tokenStr;
                 }
 
-                // For SNAP_QUOTE mode (3) — more fields available
+                double open = 0, high = 0, low = 0, close = 0;
+                long   vol  = 0;
+
+                // QUOTE (2) or SNAP_QUOTE (3): extra fields
+                if ((mode == QUOTE || mode == SNAP_QUOTE) &&
+                    data.Length >= 123)
+                {
+                    vol   = BitConverter.ToInt64(data,  67);        // volume
+                    open  = BitConverter.ToInt64(data,  91) / 100.0; // open
+                    high  = BitConverter.ToInt64(data,  99) / 100.0; // high
+                    low   = BitConverter.ToInt64(data, 107) / 100.0; // low
+                    close = BitConverter.ToInt64(data, 115) / 100.0; // prev close
+                }
+
                 var tick = new LiveTick
                 {
-                    Symbol = symbol,
-                    Token = tokenStr,
-                    LTP = ltp,
-                    ExchangeType = exchangeType,
-                    LastUpdated = DateTime.Now
+                    Symbol        = symbol,
+                    Token         = tokenStr,
+                    LTP           = ltp,
+                    Open          = open  > 0 ? open  : ltp,
+                    High          = high  > 0 ? high  : ltp,
+                    Low           = low   > 0 ? low   : ltp,
+                    Close         = close > 0 ? close : ltp,
+                    Volume        = vol,
+                    ChangePercent = close > 0
+                        ? Math.Round((ltp - close) / close * 100, 2) : 0,
+                    LastUpdated   = DateTime.Now
                 };
 
-                if (data.Length >= 67)
-                {
-                    // Additional fields in SNAP_QUOTE
-                    long open = BitConverter.ToInt64(data, 51);
-                    long high = BitConverter.ToInt64(data, 59);
-                    long low = BitConverter.ToInt64(data, 67);
-
-                    if (data.Length >= 83)
-                    {
-                        long close = BitConverter.ToInt64(data, 75);
-                        long vol = BitConverter.ToInt64(data, 83);
-
-                        tick.Open = open / 100.0;
-                        tick.High = high / 100.0;
-                        tick.Low = low / 100.0;
-                        tick.Close = close / 100.0;
-                        tick.Volume = (long)(vol);
-
-                        if (tick.Close > 0)
-                            tick.ChangePercent =
-                                ((ltp - tick.Close) / tick.Close) * 100;
-                    }
-                }
-
-                // Store tick
-                lock (_lock)
-                {
-                    _ticks[symbol] = tick;
-                }
-
-                // Fire event
+                lock (_lock) { _ticks[symbol] = tick; }
                 OnTickUpdate?.Invoke(symbol, tick);
             }
             catch (Exception ex)
             {
-                _logger.LogDebug(
-                    "Tick parse error: {msg}", ex.Message);
+                _logger.LogDebug("⚠️ Binary parse error: {msg}", ex.Message);
             }
         }
 
-        // ── Parse text messages (errors/acks) ─────────
-        private void ParseTextMessage(string text)
+        // Send "ping" every 10s per official SDK
+        private async Task HeartbeatLoopAsync()
         {
             try
             {
-                var json = JsonDocument.Parse(text);
-                var root = json.RootElement;
-
-                if (root.TryGetProperty("type", out var type))
+                while (_isConnected &&
+                       !_cts.Token.IsCancellationRequested)
                 {
-                    var typeStr = type.GetString();
-                    if (typeStr == "error")
-                    {
-                        _logger.LogWarning(
-                            "⚠️ WebSocket error: {msg}", text);
-                    }
-                    else if (typeStr == "pong")
-                    {
-                        // Heartbeat acknowledged
-                    }
-                    else
-                    {
-                        _logger.LogDebug(
-                            "WS message: {msg}", text);
-                    }
-                }
-            }
-            catch { }
-        }
-
-        // ── Heartbeat loop ────────────────────────────
-        private async Task HeartbeatLoopAsync()
-        {
-            while (_isConnected &&
-                   !_cts.Token.IsCancellationRequested)
-            {
-                try
-                {
-                    await Task.Delay(
-                        TimeSpan.FromSeconds(30), _cts.Token);
+                    await Task.Delay(HeartBeatInterval * 1000, _cts.Token);
                     if (_isConnected)
-                        await SendAsync(
-                            JsonSerializer.Serialize(
-                                new { action = "ping" }));
+                        await SendTextAsync(HeartBeatMessage);
                 }
-                catch (OperationCanceledException) { break; }
-                catch { }
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception ex)
+            {
+                _logger.LogWarning("⚠️ Heartbeat error: {m}", ex.Message);
             }
         }
 
-        // ── Reconnect with backoff ────────────────────
+        // Pause retries outside market hours
         private async Task ReconnectAsync()
         {
             if (_reconnecting || _disposed) return;
             _reconnecting = true;
 
-            int delay = 5;
+            int[] delays = { 5, 10, 20, 40, 60, 60, 60 };
+            int   idx    = 0;
+
             while (!_disposed && !_isConnected)
             {
+                var now      = DateTime.UtcNow.AddHours(5).AddMinutes(30);
+                bool weekday = now.DayOfWeek != DayOfWeek.Saturday
+                            && now.DayOfWeek != DayOfWeek.Sunday;
+                bool mktTime = now.TimeOfDay >= new TimeSpan(9, 0, 0)
+                            && now.TimeOfDay <= new TimeSpan(15, 35, 0);
+
+                if (!weekday || !mktTime)
+                {
+                    _logger.LogInformation(
+                        "⏸️ WS retry paused — market closed. Auto-retry at 9:00 AM IST.");
+                    await Task.Delay(TimeSpan.FromMinutes(10));
+                    continue;
+                }
+
+                int wait = delays[Math.Min(idx++, delays.Length - 1)];
                 _logger.LogInformation(
-                    "🔄 WebSocket reconnecting in {d}s...", delay);
-                await Task.Delay(
-                    TimeSpan.FromSeconds(delay));
+                    "🔄 WebSocket reconnecting in {s}s...", wait);
+                await Task.Delay(wait * 1000);
 
-                try { await ConnectAsync(); }
-                catch { }
-
-                delay = Math.Min(delay * 2, 60); // max 60s
+                if (!_disposed)
+                    await ConnectAsync();
             }
+            _reconnecting = false;
         }
 
-        // ── Send message ──────────────────────────────
-        private async Task SendAsync(string message)
+        private async Task SendTextAsync(string message)
         {
-            if (_ws?.State != WebSocketState.Open) return;
             try
             {
+                if (_ws?.State != WebSocketState.Open) return;
                 var bytes = Encoding.UTF8.GetBytes(message);
                 await _ws.SendAsync(
                     new ArraySegment<byte>(bytes),
@@ -459,90 +407,58 @@ namespace AlgoSenseNSE.API.Services
             }
             catch (Exception ex)
             {
-                _logger.LogDebug(
-                    "WS send error: {msg}", ex.Message);
+                _logger.LogWarning("⚠️ WS send error: {m}", ex.Message);
             }
         }
 
-        // ── Public getters ────────────────────────────
         public LiveTick? GetTick(string symbol)
         {
             lock (_lock)
             {
-                return _ticks.GetValueOrDefault(symbol);
+                return _ticks.TryGetValue(symbol, out var t) ? t : null;
             }
         }
 
-        public Dictionary<string, LiveTick> GetAllTicks()
+        public List<LiveTick> GetAllTicks()
         {
-            lock (_lock)
-            {
-                return new Dictionary<string, LiveTick>(_ticks);
-            }
+            lock (_lock) { return _ticks.Values.ToList(); }
         }
 
-        public LivePrice? GetLivePrice(string symbol)
-        {
-            var tick = GetTick(symbol);
-            if (tick == null) return null;
-
-            return new LivePrice
-            {
-                Symbol = tick.Symbol,
-                LTP = tick.LTP,
-                Open = tick.Open,
-                High = tick.High,
-                Low = tick.Low,
-                Change = tick.LTP - tick.Close,
-                ChangePercent = tick.ChangePercent,
-                Volume = tick.Volume
-            };
-        }
-
-        // ── Disconnect ────────────────────────────────
         public async Task DisconnectAsync()
         {
             _isConnected = false;
             _cts.Cancel();
-
-            if (_ws?.State == WebSocketState.Open)
+            try
             {
-                try
-                {
+                if (_ws?.State == WebSocketState.Open)
                     await _ws.CloseAsync(
                         WebSocketCloseStatus.NormalClosure,
-                        "Disconnecting",
-                        CancellationToken.None);
-                }
-                catch { }
+                        "Shutdown", CancellationToken.None);
             }
-            _logger.LogInformation(
-                "🔌 WebSocket disconnected");
+            catch { }
         }
 
         public void Dispose()
         {
+            if (_disposed) return;
             _disposed = true;
-            _isConnected = false;
             _cts.Cancel();
             _ws?.Dispose();
             _cts.Dispose();
         }
     }
 
-    // ── Live Tick Model ───────────────────────────────
     public class LiveTick
     {
-        public string Symbol { get; set; } = "";
-        public string Token { get; set; } = "";
-        public double LTP { get; set; }
-        public double Open { get; set; }
-        public double High { get; set; }
-        public double Low { get; set; }
-        public double Close { get; set; } // prev close
-        public double ChangePercent { get; set; }
-        public long Volume { get; set; }
-        public short ExchangeType { get; set; }
-        public DateTime LastUpdated { get; set; }
+        public string   Symbol        { get; set; } = "";
+        public string   Token         { get; set; } = "";
+        public double   LTP           { get; set; }
+        public double   Open          { get; set; }
+        public double   High          { get; set; }
+        public double   Low           { get; set; }
+        public double   Close         { get; set; }
+        public long     Volume        { get; set; }
+        public double   ChangePercent { get; set; }
+        public DateTime LastUpdated   { get; set; } = DateTime.Now;
     }
 }
