@@ -18,6 +18,7 @@ namespace AlgoSenseNSE.API.Services
         private readonly RiskManager _risk;
         private readonly IConfiguration _config;
         private readonly ILogger<AlertEngine> _logger;
+        private readonly RejectedTradeTracker? _rejectTracker;
 
         private readonly List<AlertRecord> _alertHistory = new();
         private readonly object _lock = new();
@@ -37,12 +38,14 @@ namespace AlgoSenseNSE.API.Services
             TelegramService telegram,
             RiskManager risk,
             IConfiguration config,
-            ILogger<AlertEngine> logger)
+            ILogger<AlertEngine> logger,
+            RejectedTradeTracker? rejectTracker = null)
         {
-            _telegram = telegram;
-            _risk     = risk;
-            _config   = config;
-            _logger   = logger;
+            _telegram      = telegram;
+            _risk          = risk;
+            _config        = config;
+            _logger        = logger;
+            _rejectTracker = rejectTracker;
         }
 
         // ── Main process — called every 5 minutes ─────
@@ -277,10 +280,17 @@ namespace AlgoSenseNSE.API.Services
                 }
 
                 // ── Enforce minimum R:R of 1:2 (slippage-adjusted) ──
-                // Use slippage-adjusted prices for realistic R:R
-                double adjEntry  = rec.Stock.LastPrice * 1.0010; // +0.10%
-                double adjTarget = ai.Target           * 0.9990; // -0.10%
-                double adjSL     = ai.StopLoss         * 0.9995; // -0.05%
+                // Price-sensitive slippage — low-priced stocks wider spread
+                double p = rec.Stock.LastPrice;
+                double (slipE, slipT, slipSL) = p switch
+                {
+                    < 100 => (0.0020, 0.0020, 0.0010),
+                    < 300 => (0.0010, 0.0010, 0.0005),
+                    _     => (0.0005, 0.0005, 0.0003)
+                };
+                double adjEntry  = p          * (1 + slipE);
+                double adjTarget = ai.Target  * (1 - slipT);
+                double adjSL     = ai.StopLoss * (1 - slipSL);
 
                 double potentialProfit =
                     (adjTarget - adjEntry) * posSize.Quantity;
@@ -295,6 +305,13 @@ namespace AlgoSenseNSE.API.Services
                         "⏭ {sym} skipped: Adj R:R={rr:F1} < 2.0 " +
                         "(after slippage adjustment)",
                         symbol, rr);
+
+                    // Log as rejected trade for gate analysis
+                    if (_rejectTracker != null)
+                        _ = _rejectTracker.LogRejectionAsync(
+                            symbol, adjEntry, adjTarget, adjSL, rr,
+                            $"R:R {rr:F2} < 2.0 minimum",
+                            6, 7, rec.Technical, rec.Score, null);
                     continue;
                 }
 
