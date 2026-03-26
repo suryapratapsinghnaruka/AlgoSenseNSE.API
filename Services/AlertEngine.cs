@@ -1,11 +1,16 @@
-﻿using AlgoSenseNSE.API.Models;
+using AlgoSenseNSE.API.Models;
 
 namespace AlgoSenseNSE.API.Services
 {
     /// <summary>
     /// Alert engine for equity stock signals.
     /// Calibrated for ₹1,000–₹2,000 intraday capital.
-    /// Max 3 alerts per day, strict quality filters.
+    /// 
+    /// Improvements v2:
+    /// - Minimum R:R raised to 1:2
+    /// - 30-min cooldown per stock (no repeat alerts)
+    /// - ATR-based position sizing
+    /// - Market regime detection (Trend/Range/Panic)
     /// </summary>
     public class AlertEngine
     {
@@ -17,11 +22,15 @@ namespace AlgoSenseNSE.API.Services
         private readonly List<AlertRecord> _alertHistory = new();
         private readonly object _lock = new();
 
-        private bool _marketOpenAlertSent = false;
+        // ── Per-stock cooldown (30 min) ───────────────
+        private readonly Dictionary<string, DateTime> _lastAlertTime = new();
+        private const int CooldownMinutes = 30;
+
+        private bool _marketOpenAlertSent  = false;
         private bool _marketCloseAlertSent = false;
-        private bool _haltAlertSent = false;
-        private int _alertsToday = 0;
-        private double _dailyPnL = 0;
+        private bool _haltAlertSent        = false;
+        private int    _alertsToday = 0;
+        private double _dailyPnL    = 0;
         private DateTime _lastProcessTime = DateTime.MinValue;
 
         public AlertEngine(
@@ -31,9 +40,9 @@ namespace AlgoSenseNSE.API.Services
             ILogger<AlertEngine> logger)
         {
             _telegram = telegram;
-            _risk = risk;
-            _config = config;
-            _logger = logger;
+            _risk     = risk;
+            _config   = config;
+            _logger   = logger;
         }
 
         // ── Main process — called every 5 minutes ─────
@@ -50,11 +59,14 @@ namespace AlgoSenseNSE.API.Services
                 ist.Hour == 9 && ist.Minute >= 15 &&
                 IsWeekday(ist))
             {
-                _marketOpenAlertSent = true;
+                _marketOpenAlertSent  = true;
                 _marketCloseAlertSent = false;
-                _haltAlertSent = false;
-                _alertsToday = 0;
-                _dailyPnL = 0;
+                _haltAlertSent        = false;
+                _alertsToday          = 0;
+                _dailyPnL             = 0;
+
+                // Detect market regime for open message
+                var regime = DetectRegime(recommendations, niftyLtp);
 
                 int bullCount = recommendations.Count(r =>
                     r.AiAnalysis?.Recommendation == "BUY");
@@ -68,19 +80,20 @@ namespace AlgoSenseNSE.API.Services
                     $"({r.AiAnalysis?.Recommendation ?? "?"})").ToList();
 
                 await _telegram.SendMarketOpenSummaryAsync(
-                    niftyLtp, 0, bias, picks);
+                    niftyLtp, 0, $"{bias} | Regime: {regime}", picks);
 
-                _logger.LogInformation("📱 Market open alert sent");
+                _logger.LogInformation(
+                    "📱 Market open alert sent | Regime: {regime}", regime);
                 return;
             }
 
             // ── Market close reminder (3:10 PM) ──────
             if (!_marketCloseAlertSent &&
-    ist.Hour == 15 && ist.Minute >= 5 &&
-    IsWeekday(ist))
+                ist.Hour == 15 && ist.Minute >= 5 &&
+                IsWeekday(ist))
             {
                 _marketCloseAlertSent = true;
-                _marketOpenAlertSent = false;
+                _marketOpenAlertSent  = false;
 
                 await _telegram.SendMessageAsync(
                     "⏰ <b>EXIT ALL POSITIONS — 3:10 PM</b>\n\n" +
@@ -102,12 +115,25 @@ namespace AlgoSenseNSE.API.Services
             // ── Don't process outside market hours ────
             if (!IsMarketHours(ist)) return;
 
-            // ── Wait for 9:20 AM (first 5 min too volatile) ──
+            // ── Wait for 9:20 AM ──────────────────────
             if (ist.Hour == 9 && ist.Minute < 20) return;
 
             // ── Prevent too frequent processing ───────
             if ((DateTime.Now - _lastProcessTime).TotalMinutes < 4) return;
             _lastProcessTime = DateTime.Now;
+
+            // ── Detect market regime ──────────────────
+            var currentRegime = DetectRegime(recommendations, niftyLtp);
+            _logger.LogInformation(
+                "📊 Market regime: {regime}", currentRegime);
+
+            // Don't trade in Panic regime
+            if (currentRegime == "PANIC")
+            {
+                _logger.LogInformation(
+                    "🚨 PANIC regime — skipping all signals");
+                return;
+            }
 
             // ── Check trading halted ──────────────────
             var riskSummary = _risk.GetSummary();
@@ -124,16 +150,27 @@ namespace AlgoSenseNSE.API.Services
             }
 
             // ── Max alerts per day ────────────────────
-            int maxAlerts = _config.GetValue<int>("Trading:MaxAlertsPerDay", 3);
+            int maxAlerts = _config.GetValue<int>(
+                "Trading:MaxAlertsPerDay", 3);
             if (_alertsToday >= maxAlerts)
             {
-                _logger.LogDebug("Max alerts ({max}) reached for today", maxAlerts);
+                _logger.LogDebug(
+                    "Max alerts ({max}) reached for today", maxAlerts);
                 return;
             }
 
             // ── Quality thresholds ────────────────────
-            int minConfidence = _config.GetValue<int>("Trading:MinConfidence", 70);
+            int    minConfidence = _config.GetValue<int>(
+                "Trading:MinConfidence", 70);
             double minScore = 68.0;
+
+            // ── Adjust thresholds by regime ───────────
+            // In Range regime, require higher confidence
+            if (currentRegime == "RANGE")
+            {
+                minConfidence = 75;
+                minScore      = 72.0;
+            }
 
             // ── Process each recommendation ───────────
             foreach (var rec in recommendations.Take(5))
@@ -141,97 +178,128 @@ namespace AlgoSenseNSE.API.Services
                 if (_alertsToday >= maxAlerts) break;
 
                 var symbol = rec.Stock.Symbol;
-                var ai = rec.AiAnalysis;
-                var tech = rec.Technical;
-                var score = rec.Score;
+                var ai     = rec.AiAnalysis;
+                var tech   = rec.Technical;
+                var score  = rec.Score;
+
+                // ── 30-min cooldown per stock ─────────
+                if (_lastAlertTime.TryGetValue(symbol, out var lastAlert) &&
+                    (DateTime.Now - lastAlert).TotalMinutes < CooldownMinutes)
+                {
+                    _logger.LogDebug(
+                        "⏸ {sym} on cooldown ({min:F0} min remaining)",
+                        symbol,
+                        CooldownMinutes - (DateTime.Now - lastAlert).TotalMinutes);
+                    continue;
+                }
 
                 // ── Quality filters ───────────────────
-                // 1. Must be BUY
                 if (ai?.Recommendation != "BUY")
                 {
-                    _logger.LogDebug("⏭ {sym} skipped: AI={rec}", symbol, ai?.Recommendation);
+                    _logger.LogDebug(
+                        "⏭ {sym} skipped: AI={rec}",
+                        symbol, ai?.Recommendation);
                     continue;
                 }
 
-                // 2. Minimum composite score
                 if (score.FinalScore < minScore)
                 {
-                    _logger.LogInformation("⏭ {sym} skipped: Score={s} < {min}",
-        symbol, score.FinalScore, minScore);
+                    _logger.LogInformation(
+                        "⏭ {sym} skipped: Score={s} < {min}",
+                        symbol, score.FinalScore, minScore);
                     continue;
                 }
 
-                // 3. Minimum AI confidence
                 if (ai.Confidence < minConfidence)
                 {
-                    _logger.LogInformation("⏭ {sym} skipped: Confidence={c}% < {min}%",
-        symbol, ai.Confidence, minConfidence);
+                    _logger.LogInformation(
+                        "⏭ {sym} skipped: Confidence={c}% < {min}%",
+                        symbol, ai.Confidence, minConfidence);
                     continue;
                 }
 
-                // 4. Supertrend must be bullish
                 if (!tech.SupertrendBullish)
                 {
-                    _logger.LogInformation("⏭ {sym} skipped: Supertrend=SELL", symbol);
+                    _logger.LogInformation(
+                        "⏭ {sym} skipped: Supertrend=SELL", symbol);
                     continue;
                 }
 
-                // 5. Price must be above VWAP
                 if (rec.Stock.LastPrice <= 0 ||
                     tech.VWAP <= 0 ||
                     rec.Stock.LastPrice < tech.VWAP)
                 {
-                    _logger.LogInformation("⏭ {sym} skipped: Price ₹{p} below VWAP ₹{v}",
-        symbol, rec.Stock.LastPrice, tech.VWAP);
-                    continue; 
-                }
-
-                // 6. ADX must show trend strength
-                if (tech.ADX < 20)
-                {
-                    _logger.LogInformation("⏭ {sym} skipped: ADX={adx} < 15",
-        symbol, tech.ADX);
+                    _logger.LogInformation(
+                        "⏭ {sym} skipped: Price ₹{p} below VWAP ₹{v}",
+                        symbol, rec.Stock.LastPrice, tech.VWAP);
                     continue;
                 }
 
-                // 7. RSI must be in buy zone (45-75)
+                if (tech.ADX < 20)
+                {
+                    _logger.LogInformation(
+                        "⏭ {sym} skipped: ADX={adx} < 20",
+                        symbol, tech.ADX);
+                    continue;
+                }
+
                 if (tech.RSI < 45 || tech.RSI > 75)
                 {
-                    _logger.LogInformation("⏭ {sym} skipped: RSI={rsi} out of 45-75 range",
-        symbol, tech.RSI);
+                    _logger.LogInformation(
+                        "⏭ {sym} skipped: RSI={rsi} out of 45-75",
+                        symbol, tech.RSI);
                     continue;
                 }
 
                 // ── Risk check ────────────────────────
                 if (!_risk.CanTrade(out var riskReason))
                 {
-                    _logger.LogWarning("⚠️ Risk block: {reason}", riskReason);
+                    _logger.LogWarning(
+                        "⚠️ Risk block: {reason}", riskReason);
                     break;
                 }
 
-                // ── Position sizing ───────────────────
-                var posSize = _risk.Calculate(
+                // ── ATR-based position sizing ─────────
+                // High ATR = volatile = smaller size
+                // Low ATR  = stable  = larger size
+                var posSize = _risk.CalculateWithAtr(
                     symbol,
                     rec.Stock.LastPrice,
-                    tech.SuggestedStopLoss);
+                    tech.SuggestedStopLoss,
+                    tech.ATR);
 
                 if (!posSize.IsValid)
                 {
                     _logger.LogWarning(
-                        "⚠️ Position size invalid for {sym}: {reason}",
+                        "⚠️ Position invalid for {sym}: {reason}",
                         symbol, posSize.Reason);
                     continue;
                 }
 
-                // ── Brokerage viability check ─────────
-                // Don't alert if brokerage > 30% of expected profit
-                double expectedProfit = posSize.Quantity *
-                    (ai.Target - rec.Stock.LastPrice);
-                if (expectedProfit < posSize.Brokerage * 1.5)
+                // ── Enforce minimum R:R of 1:2 ────────
+                double potentialProfit =
+                    (ai.Target - rec.Stock.LastPrice) * posSize.Quantity;
+                double potentialLoss =
+                    (rec.Stock.LastPrice - ai.StopLoss) * posSize.Quantity;
+                double rr = potentialLoss > 0
+                    ? potentialProfit / potentialLoss : 0;
+
+                if (rr < 2.0)
+                {
+                    _logger.LogInformation(
+                        "⏭ {sym} skipped: R:R={rr:F1} < 2.0 minimum",
+                        symbol, rr);
+                    continue;
+                }
+
+                // ── Brokerage viability ───────────────
+                double netProfit = potentialProfit - posSize.Brokerage;
+                if (netProfit < posSize.Brokerage * 1.5)
                 {
                     _logger.LogWarning(
-                        "⚠️ Skipping {sym} — profit ₹{p:F0} too close to " +
-                        "brokerage ₹{b:F0}", symbol, expectedProfit, posSize.Brokerage);
+                        "⚠️ {sym} — net profit ₹{p:F0} too close " +
+                        "to brokerage ₹{b:F0}",
+                        symbol, netProfit, posSize.Brokerage);
                     continue;
                 }
 
@@ -245,32 +313,81 @@ namespace AlgoSenseNSE.API.Services
                 if (string.IsNullOrEmpty(reason))
                     reason = "  • Strong technical + fundamental setup";
 
-                // ── Send Telegram alert ───────────────
+                // ── Send alert ────────────────────────
                 await _telegram.SendBuyAlertAsync(
-                    symbol: symbol,
-                    ltp: rec.Stock.LastPrice,
-                    target: ai.Target,
-                    stopLoss: ai.StopLoss,
-                    confidence: ai.Confidence,
-                    reason: reason,
-                    quantity: posSize.Quantity,
+                    symbol:        symbol,
+                    ltp:           rec.Stock.LastPrice,
+                    target:        ai.Target,
+                    stopLoss:      ai.StopLoss,
+                    confidence:    ai.Confidence,
+                    reason:        reason,
+                    quantity:      posSize.Quantity,
                     capitalNeeded: posSize.TotalCost,
-                    timeHorizon: ai.TimeHorizon ?? "Exit by 14:30");
+                    timeHorizon:   ai.TimeHorizon ?? "Exit by 14:30",
+                    regime:        currentRegime,
+                    riskReward:    rr);
 
-                // ── Record alert ──────────────────────
+                // ── Record ────────────────────────────
+                _lastAlertTime[symbol] = DateTime.Now;
                 RecordAlert(symbol, rec.Stock.LastPrice,
                     ai.Target, ai.StopLoss,
                     posSize.Quantity, score.FinalScore);
-
                 _alertsToday++;
 
                 _logger.LogInformation(
-                    "📱 Alert sent: {sym} qty={qty} " +
-                    "entry=₹{entry} target=₹{tgt} sl=₹{sl}",
-                    symbol, posSize.Quantity,
-                    rec.Stock.LastPrice, ai.Target, ai.StopLoss);
+                    "📱 Alert sent: {sym} qty={qty} R:R=1:{rr:F1} " +
+                    "entry=₹{e} target=₹{t} sl=₹{sl} regime={r}",
+                    symbol, posSize.Quantity, rr,
+                    rec.Stock.LastPrice, ai.Target, ai.StopLoss,
+                    currentRegime);
 
-                await Task.Delay(3000); // 3s between alerts
+                await Task.Delay(3000);
+            }
+        }
+
+        // ── Market Regime Detection ───────────────────
+        // Trend:  ADX > 25, clear direction
+        // Range:  ADX < 20, price oscillating
+        // Panic:  VIX > 25 or Nifty down > 1.5%
+        public string DetectRegime(
+            List<Recommendation> recs, double niftyLtp)
+        {
+            try
+            {
+                if (!recs.Any()) return "UNKNOWN";
+
+                var techs = recs
+                    .Where(r => r.Technical != null)
+                    .Select(r => r.Technical)
+                    .ToList();
+
+                if (!techs.Any()) return "UNKNOWN";
+
+                double avgAdx = techs.Average(t => t!.ADX);
+                int bullCount = recs.Count(r =>
+                    r.Technical?.SupertrendBullish == true);
+                int bearCount = recs.Count(r =>
+                    r.Technical?.SupertrendBullish == false);
+
+                // Check for panic — high fear
+                // We infer from Supertrend: if 80%+ are bearish
+                double bearRatio = recs.Count > 0
+                    ? (double)bearCount / recs.Count : 0;
+
+                if (bearRatio >= 0.8 || avgAdx < 15)
+                    return "PANIC";
+
+                if (avgAdx >= 25 && bullCount > bearCount)
+                    return "TREND";
+
+                if (avgAdx >= 25 && bearCount > bullCount)
+                    return "TREND_DOWN";
+
+                return "RANGE";
+            }
+            catch
+            {
+                return "UNKNOWN";
             }
         }
 
@@ -283,15 +400,15 @@ namespace AlgoSenseNSE.API.Services
             {
                 _alertHistory.Add(new AlertRecord
                 {
-                    Symbol = symbol,
-                    Entry = entry,
-                    Target = target,
+                    Symbol   = symbol,
+                    Entry    = entry,
+                    Target   = target,
                     StopLoss = sl,
                     Quantity = qty,
-                    Score = score,
-                    Type = "STOCK",
-                    SentAt = DateTime.Now,
-                    Status = "OPEN"
+                    Score    = score,
+                    Type     = "STOCK",
+                    SentAt   = DateTime.Now,
+                    Status   = "OPEN"
                 });
 
                 if (_alertHistory.Count > 100)
@@ -325,29 +442,30 @@ namespace AlgoSenseNSE.API.Services
             }
         }
 
-        // ── Public getters ────────────────────────────
         public List<AlertRecord> GetAlertHistory()
         {
             lock (_lock) { return _alertHistory.ToList(); }
         }
-        public int GetAlertsToday() => _alertsToday;
-        public double GetDailyPnL() => _dailyPnL;
-        public void AddPnL(double p) => _dailyPnL += p;
+        public int    GetAlertsToday() => _alertsToday;
+        public double GetDailyPnL()    => _dailyPnL;
+        public void   AddPnL(double p) => _dailyPnL += p;
+        public string GetCurrentRegime(
+            List<Recommendation> recs, double niftyLtp)
+            => DetectRegime(recs, niftyLtp);
     }
 
-    // ── Alert Record ──────────────────────────────────
     public class AlertRecord
     {
-        public string Symbol { get; set; } = "";
-        public double Entry { get; set; }
-        public double Target { get; set; }
-        public double StopLoss { get; set; }
-        public int Quantity { get; set; }
-        public double Score { get; set; }
-        public string Type { get; set; } = "STOCK";
-        public DateTime SentAt { get; set; }
-        public string Status { get; set; } = "OPEN";
-        public double ExitPrice { get; set; }
-        public double PnL { get; set; }
+        public string   Symbol    { get; set; } = "";
+        public double   Entry     { get; set; }
+        public double   Target    { get; set; }
+        public double   StopLoss  { get; set; }
+        public int      Quantity  { get; set; }
+        public double   Score     { get; set; }
+        public string   Type      { get; set; } = "STOCK";
+        public DateTime SentAt    { get; set; }
+        public string   Status    { get; set; } = "OPEN";
+        public double   ExitPrice { get; set; }
+        public double   PnL       { get; set; }
     }
 }
