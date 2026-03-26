@@ -360,19 +360,25 @@ Respond ONLY in this JSON (no markdown, no preamble):
                 return Avoid($"Only {minsToClose} min to close — too late");
 
             // ── All rules passed → BUY ─────────────────
-            // Calculate ATR-based target and SL
-            double entry = stock.LastPrice;
-            double sl, target;
+            // Slippage-adjusted prices (realistic market order fills)
+            // Entry: +0.10% (market order fills worse than LTP)
+            // Target: -0.10% (exit fills worse)
+            // SL: -0.05% (SL trigger fills slightly below)
+            double rawEntry = stock.LastPrice;
+            double entry    = rawEntry * 1.0010; // +0.10% slippage
 
+            double sl, target;
             if (tech.ATR > 0)
             {
-                sl     = entry - (tech.ATR * 0.75);
-                target = entry + (tech.ATR * 2.0); // 1:2 R:R minimum
+                double rawSL     = rawEntry - (tech.ATR * 0.75);
+                double rawTarget = rawEntry + (tech.ATR * 2.0);
+                sl     = rawSL     * 0.9995; // -0.05%
+                target = rawTarget * 0.9990; // -0.10%
             }
             else
             {
-                sl     = entry * 0.9975;
-                target = entry * 1.005;
+                sl     = entry * 0.9970;
+                target = entry * 1.0040;
             }
 
             double rr = sl > 0 && sl < entry
