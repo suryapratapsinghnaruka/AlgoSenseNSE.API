@@ -276,18 +276,24 @@ namespace AlgoSenseNSE.API.Services
                     continue;
                 }
 
-                // ── Enforce minimum R:R of 1:2 ────────
+                // ── Enforce minimum R:R of 1:2 (slippage-adjusted) ──
+                // Use slippage-adjusted prices for realistic R:R
+                double adjEntry  = rec.Stock.LastPrice * 1.0010; // +0.10%
+                double adjTarget = ai.Target           * 0.9990; // -0.10%
+                double adjSL     = ai.StopLoss         * 0.9995; // -0.05%
+
                 double potentialProfit =
-                    (ai.Target - rec.Stock.LastPrice) * posSize.Quantity;
+                    (adjTarget - adjEntry) * posSize.Quantity;
                 double potentialLoss =
-                    (rec.Stock.LastPrice - ai.StopLoss) * posSize.Quantity;
+                    (adjEntry  - adjSL)    * posSize.Quantity;
                 double rr = potentialLoss > 0
                     ? potentialProfit / potentialLoss : 0;
 
                 if (rr < 2.0)
                 {
                     _logger.LogInformation(
-                        "⏭ {sym} skipped: R:R={rr:F1} < 2.0 minimum",
+                        "⏭ {sym} skipped: Adj R:R={rr:F1} < 2.0 " +
+                        "(after slippage adjustment)",
                         symbol, rr);
                     continue;
                 }
