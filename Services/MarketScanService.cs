@@ -94,17 +94,29 @@ namespace AlgoSenseNSE.API.Services
                 else
                 {
                     // Fallback: screener has no ticks yet (before market open)
-                    // Use all token-mapped symbols as candidates
-                    var capital  = _config.GetValue<double>(
-                        "Trading:Capital", 1500);
-                    var maxPrice = (capital * 0.60) / 5;
+                    // Filter out indices and ETFs — they have spaces,
+                    // long names, or known keywords
+                    var skipWords = new HashSet<string>(
+                        StringComparer.OrdinalIgnoreCase)
+                    {
+                        "NIFTY","SENSEX","BANKNIFTY","FINNIFTY","VIX",
+                        "BANKEX","LIQUIDBEES","JUNIORBEES","NIFTYBEES",
+                        "SETFNIF","ICICIB","HDFCNIF"
+                    };
 
                     symbolsToScan = _symbolTokenMap.Keys
+                        .Where(s => !s.Contains(' '))       // indices have spaces
+                        .Where(s => !s.Contains('.'))       // some ETFs have dots
+                        .Where(s => s.Length <= 12)         // indices have long names
+                        .Where(s => !skipWords.Any(w =>
+                            s.StartsWith(w,
+                            StringComparison.OrdinalIgnoreCase)))
+                        .OrderBy(s => s)
                         .Take(80)
                         .ToList();
 
                     _logger.LogInformation(
-                        "📋 Pre-market fallback: {n} symbols queued",
+                        "📋 Pre-market fallback: {n} equity symbols queued",
                         symbolsToScan.Count);
                 }
 
