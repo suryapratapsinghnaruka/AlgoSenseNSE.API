@@ -282,15 +282,15 @@ namespace AlgoSenseNSE.API.Services
                 // ── Enforce minimum R:R of 1:2 (slippage-adjusted) ──
                 // Price-sensitive slippage — low-priced stocks wider spread
                 double p = rec.Stock.LastPrice;
-                double (slipE, slipT, slipSL) = p switch
+                var slipTuple = p switch
                 {
-                    < 100 => (0.0020, 0.0020, 0.0010),
-                    < 300 => (0.0010, 0.0010, 0.0005),
-                    _     => (0.0005, 0.0005, 0.0003)
+                    < 100 => (E: 0.0020, T: 0.0020, SL: 0.0010),
+                    < 300 => (E: 0.0010, T: 0.0010, SL: 0.0005),
+                    _     => (E: 0.0005, T: 0.0005, SL: 0.0003)
                 };
-                double adjEntry  = p          * (1 + slipE);
-                double adjTarget = ai.Target  * (1 - slipT);
-                double adjSL     = ai.StopLoss * (1 - slipSL);
+                double adjEntry  = p           * (1 + slipTuple.E);
+                double adjTarget = ai.Target   * (1 - slipTuple.T);
+                double adjSL     = ai.StopLoss * (1 - slipTuple.SL);
 
                 double potentialProfit =
                     (adjTarget - adjEntry) * posSize.Quantity;
