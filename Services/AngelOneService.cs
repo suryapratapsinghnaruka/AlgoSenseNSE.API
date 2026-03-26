@@ -1,4 +1,4 @@
-﻿using AlgoSenseNSE.API.Models;
+using AlgoSenseNSE.API.Models;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using OtpNet;
@@ -15,17 +15,19 @@ namespace AlgoSenseNSE.API.Services
         private readonly HttpClient _http;
         private readonly IHttpClientFactory _httpClientFactory;
 
-        private string _jwtToken = "";
-        private string _apiKey = "";
-        private string _feedToken = "";
-        private string _clientId = "";
+        private string _jwtToken     = "";
+        private string _apiKey       = "";
+        private string _feedToken    = "";
+        private string _clientId     = "";
         private string _refreshToken = "";
         private DateTime _tokenExpiry = DateTime.MinValue;
         private AngelOneWebSocketService? _wsService;
 
+        // Cache token map — avoids re-downloading 40MB on every restart
+        private Dictionary<string, string>? _cachedTokenMap;
+
         private const string BaseUrl = "https://apiconnect.angelone.in";
 
-        // Rate limiter — Angel One free = ~3 req/sec
         private readonly SemaphoreSlim _rateLimiter = new(1, 1);
         private DateTime _lastApiCall = DateTime.MinValue;
         private const int MinMsBetweenCalls = 400;
@@ -35,16 +37,17 @@ namespace AlgoSenseNSE.API.Services
             ILogger<AngelOneService> logger,
             IHttpClientFactory httpClientFactory)
         {
-            _config = config;
-            _logger = logger;
+            _config            = config;
+            _logger            = logger;
             _httpClientFactory = httpClientFactory;
-            _http = httpClientFactory.CreateClient("AngelOne");
-            _apiKey = _config["AngelOne:ApiKey"] ?? "";
-            _clientId = _config["AngelOne:ClientId"] ?? "";
+            _http              = httpClientFactory.CreateClient("AngelOne");
+            _apiKey            = _config["AngelOne:ApiKey"]   ?? "";
+            _clientId          = _config["AngelOne:ClientId"] ?? "";
         }
-        public void SetWebSocketService(AngelOneWebSocketService ws) => _wsService = ws;
 
-        // ── Rate throttle ─────────────────────────────
+        public void SetWebSocketService(AngelOneWebSocketService ws)
+            => _wsService = ws;
+
         private async Task ThrottleAsync()
         {
             await _rateLimiter.WaitAsync();
@@ -58,12 +61,11 @@ namespace AlgoSenseNSE.API.Services
             finally { _rateLimiter.Release(); }
         }
 
-        // ── Generate TOTP ─────────────────────────────
         private string GenerateTotp()
         {
             var secret = _config["AngelOne:TotpSecret"]!;
-            var bytes = Base32Encoding.ToBytes(secret);
-            var totp = new Totp(bytes);
+            var bytes  = Base32Encoding.ToBytes(secret);
+            var totp   = new Totp(bytes);
             return totp.ComputeTotp();
         }
 
@@ -72,48 +74,62 @@ namespace AlgoSenseNSE.API.Services
         {
             try
             {
-                var totp = GenerateTotp();
+                var totp    = GenerateTotp();
                 var payload = new
                 {
                     clientcode = _config["AngelOne:ClientId"],
-                    password = _config["AngelOne:Password"],
-                    totp = totp
+                    password   = _config["AngelOne:Password"],
+                    totp       = totp
                 };
 
                 var request = new HttpRequestMessage(HttpMethod.Post,
                     $"{BaseUrl}/rest/auth/angelbroking/user/v1/loginByPassword");
-
-                request.Headers.Add("X-API-KEY", _apiKey);
-                request.Headers.Add("X-ClientLocalIP", "127.0.0.1");
+                request.Headers.Add("X-API-KEY",        _apiKey);
+                request.Headers.Add("X-ClientLocalIP",  "127.0.0.1");
                 request.Headers.Add("X-ClientPublicIP", "127.0.0.1");
-                request.Headers.Add("X-MACAddress", "00:00:00:00:00:00");
-                request.Headers.Add("X-PrivateKey", _apiKey);
-                request.Headers.Add("X-UserType", "USER");
-                request.Headers.Add("X-SourceID", "WEB");
-                request.Headers.Add("Accept", "application/json");
+                request.Headers.Add("X-MACAddress",     "00:00:00:00:00:00");
+                request.Headers.Add("X-PrivateKey",     _apiKey);
+                request.Headers.Add("X-UserType",       "USER");
+                request.Headers.Add("X-SourceID",       "WEB");
+                request.Headers.Add("Accept",           "application/json");
                 request.Content = new StringContent(
                     JsonConvert.SerializeObject(payload),
                     Encoding.UTF8, "application/json");
 
-                var response = await _http.SendAsync(request);
+                var response    = await _http.SendAsync(request);
                 var rawResponse = await response.Content.ReadAsStringAsync();
 
                 _logger.LogInformation(
                     "Angel One login response [{code}]: {body}",
                     (int)response.StatusCode,
-                    rawResponse.Length > 200 ? rawResponse[..200] : rawResponse);
+                    rawResponse.Length > 200
+                        ? rawResponse[..200] : rawResponse);
+
+                // Guard non-JSON (e.g. 403 rate limit returns plain text)
+                if (!response.IsSuccessStatusCode ||
+                    !rawResponse.TrimStart().StartsWith("{"))
+                {
+                    _logger.LogWarning(
+                        "⚠️ Login non-JSON [{code}]: {body}",
+                        (int)response.StatusCode,
+                        rawResponse.Length > 100
+                            ? rawResponse[..100] : rawResponse);
+                    await Task.Delay(2000);
+                    return false;
+                }
 
                 var result = JObject.Parse(rawResponse);
                 if (result["status"]?.Value<bool>() == true)
                 {
-                    _jwtToken = result["data"]?["jwtToken"]?.Value<string>() ?? "";
-                    _feedToken = result["data"]?["feedToken"]?.Value<string>() ?? "";
+                    _jwtToken     = result["data"]?["jwtToken"]?.Value<string>()     ?? "";
+                    _feedToken    = result["data"]?["feedToken"]?.Value<string>()    ?? "";
                     _refreshToken = result["data"]?["refreshToken"]?.Value<string>() ?? "";
-                    _tokenExpiry = DateTime.Now.AddHours(6);
+                    _tokenExpiry  = DateTime.Now.AddHours(6);
                     _logger.LogInformation("✅ Angel One login successful");
 
                     if (_wsService != null && !string.IsNullOrEmpty(_feedToken))
                         _wsService.SetCredentials(_jwtToken, _feedToken, _clientId);
+
                     return true;
                 }
 
@@ -128,34 +144,58 @@ namespace AlgoSenseNSE.API.Services
             }
         }
 
-        // ── Ensure token valid ────────────────────────
         private async Task EnsureLoggedInAsync()
         {
-            if (string.IsNullOrEmpty(_jwtToken) || DateTime.Now >= _tokenExpiry)
+            if (string.IsNullOrEmpty(_jwtToken) ||
+                DateTime.Now >= _tokenExpiry)
                 await LoginAsync();
         }
 
-        // ── Authenticated request builder ─────────────
-        private HttpRequestMessage CreateAuthRequest(HttpMethod method, string url)
+        private HttpRequestMessage CreateAuthRequest(
+            HttpMethod method, string url)
         {
             var req = new HttpRequestMessage(method, url);
             req.Headers.Authorization =
                 new AuthenticationHeaderValue("Bearer", _jwtToken);
-            req.Headers.Add("X-PrivateKey", _apiKey);
-            req.Headers.Add("X-UserType", "USER");
-            req.Headers.Add("X-SourceID", "WEB");
-            req.Headers.Add("X-ClientLocalIP", "127.0.0.1");
+            req.Headers.Add("X-PrivateKey",     _apiKey);
+            req.Headers.Add("X-UserType",       "USER");
+            req.Headers.Add("X-SourceID",       "WEB");
+            req.Headers.Add("X-ClientLocalIP",  "127.0.0.1");
             req.Headers.Add("X-ClientPublicIP", "127.0.0.1");
-            req.Headers.Add("X-MACAddress", "00:00:00:00:00:00");
-            req.Headers.Add("Accept", "application/json");
+            req.Headers.Add("X-MACAddress",     "00:00:00:00:00:00");
+            req.Headers.Add("Accept",           "application/json");
             return req;
         }
 
         // ── Get Live Price ────────────────────────────
-        public async Task<LivePrice?> GetLivePriceAsync(string symbol, string token)
+        public async Task<LivePrice?> GetLivePriceAsync(
+            string symbol, string token)
         {
             try
             {
+                // Try WebSocket first — no rate limit, instant
+                if (_wsService?.IsConnected == true)
+                {
+                    var tick = _wsService.GetTick(symbol);
+                    if (tick != null && tick.LTP > 0 &&
+                        (DateTime.Now - tick.LastUpdated).TotalSeconds < 30)
+                    {
+                        return new LivePrice
+                        {
+                            Symbol        = symbol,
+                            LTP           = tick.LTP,
+                            Open          = tick.Open,
+                            Change        = tick.LTP - tick.Close,
+                            ChangePercent = tick.ChangePercent,
+                            High          = tick.High,
+                            Low           = tick.Low,
+                            Volume        = tick.Volume,
+                            UpdatedAt     = tick.LastUpdated
+                        };
+                    }
+                }
+
+                // REST fallback
                 await ThrottleAsync();
                 await EnsureLoggedInAsync();
 
@@ -175,29 +215,30 @@ namespace AlgoSenseNSE.API.Services
                     Encoding.UTF8, "application/json");
 
                 var response = await _http.SendAsync(req);
-                var json = await response.Content.ReadAsStringAsync();
+                var json     = await response.Content.ReadAsStringAsync();
 
                 if (json.Contains("exceeding access rate")) return null;
 
-                var result = JObject.Parse(json);
+                var result  = JObject.Parse(json);
                 var fetched = result["data"]?["fetched"]?[0];
                 if (fetched == null) return null;
 
                 return new LivePrice
                 {
-                    Symbol = symbol,
-                    LTP = fetched["ltp"]?.Value<double>() ?? 0,
-                    Change = fetched["netChange"]?.Value<double>() ?? 0,
+                    Symbol        = symbol,
+                    LTP           = fetched["ltp"]?.Value<double>()          ?? 0,
+                    Change        = fetched["netChange"]?.Value<double>()     ?? 0,
                     ChangePercent = fetched["percentChange"]?.Value<double>() ?? 0,
-                    High = fetched["high"]?.Value<double>() ?? 0,
-                    Low = fetched["low"]?.Value<double>() ?? 0,
-                    Volume = fetched["tradeVolume"]?.Value<long>() ?? 0,
-                    UpdatedAt = DateTime.Now
+                    High          = fetched["high"]?.Value<double>()          ?? 0,
+                    Low           = fetched["low"]?.Value<double>()           ?? 0,
+                    Volume        = fetched["tradeVolume"]?.Value<long>()     ?? 0,
+                    UpdatedAt     = DateTime.Now
                 };
             }
             catch (Exception ex)
             {
-                _logger.LogDebug("Live price failed {sym}: {msg}", symbol, ex.Message);
+                _logger.LogDebug(
+                    "Live price failed {sym}: {msg}", symbol, ex.Message);
                 return null;
             }
         }
@@ -214,16 +255,17 @@ namespace AlgoSenseNSE.API.Services
                 await ThrottleAsync();
                 await EnsureLoggedInAsync();
 
-                var toDate = DateTime.Now.ToString("yyyy-MM-dd HH:mm");
-                var fromDate = DateTime.Now.AddDays(-days).ToString("yyyy-MM-dd HH:mm");
+                var toDate   = DateTime.Now.ToString("yyyy-MM-dd HH:mm");
+                var fromDate = DateTime.Now.AddDays(-days)
+                    .ToString("yyyy-MM-dd HH:mm");
 
                 var payload = new
                 {
-                    exchange = exchange,
+                    exchange    = exchange,
                     symboltoken = token,
-                    interval = interval,
-                    fromdate = fromDate,
-                    todate = toDate
+                    interval    = interval,
+                    fromdate    = fromDate,
+                    todate      = toDate
                 };
 
                 var req = CreateAuthRequest(HttpMethod.Post,
@@ -233,12 +275,13 @@ namespace AlgoSenseNSE.API.Services
                     Encoding.UTF8, "application/json");
 
                 var response = await _http.SendAsync(req);
-                var raw = await response.Content.ReadAsStringAsync();
+                var raw      = await response.Content.ReadAsStringAsync();
 
                 if (raw.Contains("exceeding access rate") ||
                     raw.Contains("Invalid API Key"))
                 {
-                    _logger.LogWarning("⚠️ OHLCV rate limited for {sym}", symbol);
+                    _logger.LogWarning(
+                        "⚠️ OHLCV rate limited for {sym}", symbol);
                     await Task.Delay(2000);
                     return new List<OhlcvCandle>();
                 }
@@ -282,11 +325,11 @@ namespace AlgoSenseNSE.API.Services
                         bars.Add(new OhlcvCandle
                         {
                             Timestamp = DateTime.Parse(arr[0].Value<string>()!),
-                            Open = arr[1].Value<double>(),
-                            High = arr[2].Value<double>(),
-                            Low = arr[3].Value<double>(),
-                            Close = arr[4].Value<double>(),
-                            Volume = arr[5].Value<long>()
+                            Open      = arr[1].Value<double>(),
+                            High      = arr[2].Value<double>(),
+                            Low       = arr[3].Value<double>(),
+                            Close     = arr[4].Value<double>(),
+                            Volume    = arr[5].Value<long>()
                         });
                     }
                     catch { }
@@ -301,14 +344,16 @@ namespace AlgoSenseNSE.API.Services
             }
             catch (Exception ex)
             {
-                _logger.LogWarning("⚠️ OHLCV exception {sym}: {msg}",
+                _logger.LogWarning(
+                    "⚠️ OHLCV exception {sym}: {msg}",
                     symbol, ex.Message);
                 return new List<OhlcvCandle>();
             }
         }
 
         // ── Get Live Index (Nifty / Sensex) ──────────
-        public async Task<object?> GetLiveIndexAsync(string exchange, string token)
+        public async Task<object?> GetLiveIndexAsync(
+            string exchange, string token)
         {
             try
             {
@@ -331,13 +376,14 @@ namespace AlgoSenseNSE.API.Services
                     Encoding.UTF8, "application/json");
 
                 var response = await _http.SendAsync(req);
-                var raw = await response.Content.ReadAsStringAsync();
+                var raw      = await response.Content.ReadAsStringAsync();
 
                 if (!raw.TrimStart().StartsWith("{"))
                 {
                     _logger.LogWarning(
                         "⚠️ Index non-JSON [{exch}]: {raw}",
-                        exchange, raw.Length > 80 ? raw[..80] : raw);
+                        exchange,
+                        raw.Length > 80 ? raw[..80] : raw);
                     return null;
                 }
 
@@ -357,10 +403,11 @@ namespace AlgoSenseNSE.API.Services
                     { "ltp", "LTP", "close", "lastTradedPrice" })
                 {
                     if (fetched[f] != null &&
-                        double.TryParse(fetched[f]!.ToString(),
+                        double.TryParse(
+                            fetched[f]!.ToString(),
                             NumberStyles.Any,
-                            CultureInfo.InvariantCulture, out double v)
-                        && v > 0)
+                            CultureInfo.InvariantCulture,
+                            out double v) && v > 0)
                     { ltp = v; break; }
                 }
 
@@ -368,28 +415,39 @@ namespace AlgoSenseNSE.API.Services
                     { "percentChange", "pChange", "netChangePercentage" })
                 {
                     if (fetched[f] != null &&
-                        double.TryParse(fetched[f]!.ToString(),
+                        double.TryParse(
+                            fetched[f]!.ToString(),
                             NumberStyles.Any,
-                            CultureInfo.InvariantCulture, out double v))
+                            CultureInfo.InvariantCulture,
+                            out double v))
                     { chg = v; break; }
                 }
 
-                return ltp > 0 ? new { ltp, changePercent = chg } : null;
+                return ltp > 0
+                    ? new { ltp, changePercent = chg }
+                    : null;
             }
             catch (Exception ex)
             {
-                _logger.LogWarning("Index fetch failed: {msg}", ex.Message);
+                _logger.LogWarning(
+                    "Index fetch failed: {msg}", ex.Message);
                 return null;
             }
         }
 
-        // ── Symbol Token Map — STREAMING (no OOM) ────
-        // Uses streaming JSON reader to avoid loading
-        // the entire 40MB file into memory at once.
-        // Falls back to hardcoded map if OOM or error.
+        // ── Symbol Token Map ──────────────────────────
         public async Task<Dictionary<string, string>> GetSymbolTokenMapAsync(
             List<string> symbols)
         {
+            // Return cached map — avoids re-downloading 40MB
+            if (_cachedTokenMap != null && _cachedTokenMap.Count > 0)
+            {
+                _logger.LogInformation(
+                    "📋 Using cached token map: {n} symbols",
+                    _cachedTokenMap.Count);
+                return _cachedTokenMap;
+            }
+
             var map = new Dictionary<string, string>(
                 StringComparer.OrdinalIgnoreCase);
             try
@@ -397,7 +455,6 @@ namespace AlgoSenseNSE.API.Services
                 var url = "https://margincalculator.angelbroking.com" +
                           "/OpenAPI_File/files/OpenAPIScripMaster.json";
 
-                // Stream response — never loads full 40MB into RAM
                 using var response = await _http.GetAsync(url,
                     HttpCompletionOption.ResponseHeadersRead);
 
@@ -406,21 +463,21 @@ namespace AlgoSenseNSE.API.Services
                     _logger.LogWarning(
                         "⚠️ Instrument master returned {code}",
                         (int)response.StatusCode);
-                    return GetFallbackSymbolMap();
+                    return RegisterAndReturn(GetFallbackSymbolMap());
                 }
 
-                using var stream = await response.Content.ReadAsStreamAsync();
-                using var reader = new StreamReader(stream);
+                using var stream     = await response.Content.ReadAsStreamAsync();
+                using var reader     = new StreamReader(stream);
                 using var jsonReader = new Newtonsoft.Json.JsonTextReader(reader);
 
-                var serializer = new Newtonsoft.Json.JsonSerializer();
+                var serializer  = new Newtonsoft.Json.JsonSerializer();
                 var instruments = serializer
                     .Deserialize<List<InstrumentToken>>(jsonReader);
 
                 if (instruments == null || instruments.Count == 0)
                 {
                     _logger.LogWarning("⚠️ No instruments returned");
-                    return GetFallbackSymbolMap();
+                    return RegisterAndReturn(GetFallbackSymbolMap());
                 }
 
                 _logger.LogInformation(
@@ -433,44 +490,52 @@ namespace AlgoSenseNSE.API.Services
                         string.IsNullOrEmpty(inst.exch_seg))
                         continue;
 
-                    // Only NSE equity stocks
                     if (inst.exch_seg != "NSE") continue;
 
-                    // Accept symbols ending in -EQ or no suffix
                     var sym = inst.symbol.Trim().ToUpper();
-
-                    if (sym.EndsWith("-EQ"))
-                        sym = sym[..^3]; // Remove -EQ suffix
-
-                    // Skip futures/options/indices (contain digits or special chars)
+                    if (sym.EndsWith("-EQ")) sym = sym[..^3];
                     if (sym.Contains("-") || sym.Contains("&")) continue;
                     if (string.IsNullOrEmpty(sym)) continue;
 
-                    // TryAdd — silently skips duplicates
                     map.TryAdd(sym, inst.token);
                 }
 
                 _logger.LogInformation(
                     "✅ Symbol token map: {count} symbols loaded", map.Count);
 
-                return map.Count > 0 ? map : GetFallbackSymbolMap();
+                return RegisterAndReturn(
+                    map.Count > 0 ? map : GetFallbackSymbolMap());
             }
             catch (OutOfMemoryException)
             {
-                _logger.LogWarning(
-                    "⚠️ OutOfMemory reading instruments — using fallback map");
-                return GetFallbackSymbolMap();
+                _logger.LogWarning("⚠️ OOM — using fallback map");
+                return RegisterAndReturn(GetFallbackSymbolMap());
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "❌ Error building symbol token map");
-                return GetFallbackSymbolMap();
+                return RegisterAndReturn(GetFallbackSymbolMap());
             }
         }
 
-        // ── Fallback map — hardcoded correct tokens ───
-        // Used when instrument master can't be loaded
-        // (low memory server like Railway free tier)
+        // ── THE KEY FIX: cache + register with WebSocket ──
+        private Dictionary<string, string> RegisterAndReturn(
+            Dictionary<string, string> tokenMap)
+        {
+            _cachedTokenMap = tokenMap;
+
+            if (_wsService != null && tokenMap.Count > 0)
+            {
+                _wsService.RegisterTokensFromMap(tokenMap);
+                _logger.LogInformation(
+                    "📡 {n} tokens registered for WebSocket streaming",
+                    tokenMap.Count);
+            }
+
+            return tokenMap;
+        }
+
+        // ── Fallback map ──────────────────────────────
         private Dictionary<string, string> GetFallbackSymbolMap()
         {
             _logger.LogWarning(
@@ -478,71 +543,35 @@ namespace AlgoSenseNSE.API.Services
 
             var tokens = new[]
             {
-                ("SBIN",       "3045"),
-                ("BANKBARODA", "4668"),
-                ("CANBK",      "10794"),
-                ("UNIONBANK",  "2752"),
-                ("MAHABANK",   "4032"),
-                ("CENTRALBK",  "20374"),
-                ("IOB",        "4574"),
-                ("INDIANB",    "10999"),
-                ("PNB",        "14428"),
-                ("COALINDIA",  "1660"),
-                ("ONGC",       "2475"),
-                ("BPCL",       "526"),
-                ("IOC",        "1624"),
-                ("GAIL",       "910"),
-                ("NMDC",       "15332"),
-                ("NATIONALUM", "15355"),
-                ("HINDALCO",   "1363"),
-                ("TATASTEEL",  "3432"),
-                ("WIPRO",      "3787"),
-                ("HCLTECH",    "7229"),
-                ("TECHM",      "13538"),
-                ("INFY",       "1594"),
-                ("TCS",        "11536"),
-                ("SUNPHARMA",  "3351"),
-                ("CIPLA",      "694"),
-                ("DRREDDY",    "881"),
-                ("LUPIN",      "10440"),
-                ("NTPC",       "11630"),
-                ("POWERGRID",  "14977"),
-                ("NHPC",       "13675"),
-                ("IRFC",       "49071"),
-                ("RVNL",       "20320"),
-                ("RECLTD",     "13611"),
-                ("PFC",        "14299"),
-                ("IREDA",      "54214"),
-                ("IRCTC",      "16752"),
-                ("IEX",        "17163"),
-                ("SUZLON",     "12018"),
-                ("ADANIPORTS", "15083"),
-                ("ADANIPOWER", "533096"),
-                ("TATAPOWER",  "3426"),
-                ("BEL",        "383"),
-                ("ITC",        "1660"),
-                ("EMAMILTD",   "317"),
-                ("MARICO",     "4067"),
-                ("MUTHOOTFIN", "18143"),
-                ("MANAPPURAM", "19061"),
-                ("LICHSGFIN",  "1023"),
-                ("LICI",       "543526"),
-                ("INDUSTOWER", "14181"),
-                ("PETRONET",   "11351"),
-                ("COLPAL",     "1623"),
-                ("HINDUNILVR", "1394"),
+                ("SBIN","3045"),("BANKBARODA","4668"),("CANBK","10794"),
+                ("UNIONBANK","2752"),("MAHABANK","4032"),
+                ("CENTRALBK","20374"),("IOB","4574"),("INDIANB","10999"),
+                ("PNB","14428"),("COALINDIA","1660"),("ONGC","2475"),
+                ("BPCL","526"),("IOC","1624"),("GAIL","910"),
+                ("NMDC","15332"),("NATIONALUM","15355"),
+                ("HINDALCO","1363"),("TATASTEEL","3432"),
+                ("WIPRO","3787"),("HCLTECH","7229"),("TECHM","13538"),
+                ("INFY","1594"),("TCS","11536"),("SUNPHARMA","3351"),
+                ("CIPLA","694"),("DRREDDY","881"),("LUPIN","10440"),
+                ("NTPC","11630"),("POWERGRID","14977"),("NHPC","13675"),
+                ("IRFC","49071"),("RVNL","20320"),("RECLTD","13611"),
+                ("PFC","14299"),("IREDA","54214"),("IRCTC","16752"),
+                ("IEX","17163"),("SUZLON","12018"),("ADANIPORTS","15083"),
+                ("ADANIPOWER","533096"),("TATAPOWER","3426"),("BEL","383"),
+                ("ITC","1660"),("EMAMILTD","317"),("MARICO","4067"),
+                ("MUTHOOTFIN","18143"),("MANAPPURAM","19061"),
+                ("LICHSGFIN","1023"),("LICI","543526"),
+                ("INDUSTOWER","14181"),("PETRONET","11351"),
+                ("COLPAL","1623"),("HINDUNILVR","1394"),
             };
 
-            var map = new Dictionary<string, string>(
+            var m = new Dictionary<string, string>(
                 StringComparer.OrdinalIgnoreCase);
-
             foreach (var (sym, tok) in tokens)
-                map.TryAdd(sym, tok);
-
-            return map;
+                m.TryAdd(sym, tok);
+            return m;
         }
 
-        // ── Get Stock Info ────────────────────────────
         public async Task<StockInfo?> GetStockInfoAsync(
             string symbol, string token)
         {
@@ -551,30 +580,29 @@ namespace AlgoSenseNSE.API.Services
 
             return new StockInfo
             {
-                Symbol = symbol,
-                LastPrice = price.LTP,
-                Change = price.Change,
+                Symbol        = symbol,
+                LastPrice     = price.LTP,
+                Change        = price.Change,
                 ChangePercent = price.ChangePercent,
-                High = price.High,
-                Low = price.Low,
-                Volume = price.Volume,
-                Open = price.LTP - price.Change
+                High          = price.High,
+                Low           = price.Low,
+                Volume        = price.Volume,
+                Open          = price.LTP - price.Change
             };
         }
 
         public string GetFeedToken() => _feedToken;
-        public string GetJwtToken() => _jwtToken;
-        public string GetClientId() => _clientId;
+        public string GetJwtToken()  => _jwtToken;
+        public string GetClientId()  => _clientId;
     }
 
-    // ── Instrument token model for streaming parse ──
     public class InstrumentToken
     {
-        public string token { get; set; } = "";
-        public string symbol { get; set; } = "";
-        public string name { get; set; } = "";
-        public string exch_seg { get; set; } = "";
-        public string expiry { get; set; } = "";    
+        public string token          { get; set; } = "";
+        public string symbol         { get; set; } = "";
+        public string name           { get; set; } = "";
+        public string exch_seg       { get; set; } = "";
+        public string expiry         { get; set; } = "";
         public string instrumenttype { get; set; } = "";
     }
 }
