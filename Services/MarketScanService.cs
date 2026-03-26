@@ -108,6 +108,9 @@ namespace AlgoSenseNSE.API.Services
                         .Where(s => !s.Contains(' '))       // indices have spaces
                         .Where(s => !s.Contains('.'))       // some ETFs have dots
                         .Where(s => s.Length <= 12)         // indices have long names
+                        .Where(s => char.IsLetter(s[0]))    // skip 011NSETEST etc.
+                        .Where(s => !s.Contains("TEST",
+                            StringComparison.OrdinalIgnoreCase))
                         .Where(s => !skipWords.Any(w =>
                             s.StartsWith(w,
                             StringComparison.OrdinalIgnoreCase)))
