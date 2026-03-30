@@ -260,9 +260,15 @@
   </div>
 
   <!-- Top 3 signals -->
-  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">
     <div style="font-size:13px;color:var(--muted)">Top recommendations — BUY and AVOID with prices</div>
-    <div id="lastUpdated" style="font-size:11px;color:var(--muted)"></div>
+    <div style="display:flex;align-items:center;gap:10px">
+      <span id="lastUpdated" style="font-size:11px;color:var(--muted)"></span>
+      <button id="forceRefreshBtn" class="refresh-btn" onclick="forceRefresh()"
+        style="background:rgba(13,148,136,0.15);border-color:var(--teal);color:var(--teal2);padding:6px 14px;font-size:12px;font-weight:600">
+        ⚡ Force Scan Now
+      </button>
+    </div>
   </div>
 
   <div class="signal-grid" id="signalGrid">
@@ -406,7 +412,27 @@ function renderRegime(mkt) {
 // ── Signal cards (BUY + AVOID both show prices) ───────
 function renderSignals(recs) {
   if (!recs || !recs.length) {
-    document.getElementById('signalGrid').innerHTML = '<div class="empty">No recommendations yet. Signals start after 9:20 AM.</div>';
+    const ist = new Date(new Date().toLocaleString("en-US", {timeZone:"Asia/Kolkata"}));
+    const h = ist.getHours(), m = ist.getMinutes();
+    const isMarket = (h > 9 || (h === 9 && m >= 20)) && (h < 15 || (h === 15 && m <= 30));
+    const msg = isMarket
+      ? `<div class="empty">
+           <div style="font-size:32px;margin-bottom:12px">⏳</div>
+           <div style="font-weight:600;margin-bottom:8px">Market is open — signals loading</div>
+           <div style="font-size:12px;color:var(--muted);margin-bottom:16px">
+             Signals refresh every 5 minutes. First scan runs at loopCount=60 (~5 min after startup).<br>
+             If this persists, click Force Scan Now.
+           </div>
+           <button onclick="forceRefresh()" style="background:rgba(13,148,136,0.2);border:1px solid var(--teal);color:var(--teal2);padding:8px 20px;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600">
+             ⚡ Force Scan Now
+           </button>
+         </div>`
+      : `<div class="empty">
+           <div style="font-size:32px;margin-bottom:12px">🌙</div>
+           <div style="font-weight:600;margin-bottom:8px">Market closed</div>
+           <div style="font-size:12px;color:var(--muted)">Signals fire between 9:20 AM – 3:10 PM IST</div>
+         </div>`;
+    document.getElementById('signalGrid').innerHTML = msg;
     return;
   }
 
@@ -741,11 +767,24 @@ async function loadAccuracy() {
   }
 }
 
-// ── Auto-refresh every 30s ────────────────────────────
-setInterval(() => {
-  const active = document.querySelector('.page.active');
-  if (active?.id === 'page-dashboard') loadDashboard();
-}, 30000);
+// ── Auto-refresh every 30s always ────────────────────
+setInterval(loadDashboard, 30000);
+
+// ── Force trigger a signal scan ──────────────────────
+async function forceRefresh() {
+  const btn = document.getElementById('forceRefreshBtn');
+  if (btn) { btn.textContent = '⏳ Scanning…'; btn.disabled = true; }
+  try {
+    // Hit the force-refresh endpoint
+    await fetch(BASE + '/api/recommendations/refresh', { method: 'POST' })
+      .catch(() => {});
+    // Wait 3s for scan to complete then reload
+    await new Promise(r => setTimeout(r, 3000));
+    await loadDashboard();
+  } finally {
+    if (btn) { btn.textContent = '⚡ Force Scan Now'; btn.disabled = false; }
+  }
+}
 </script>
 </body>
 </html>
