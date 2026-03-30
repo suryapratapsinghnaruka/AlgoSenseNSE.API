@@ -707,35 +707,82 @@ async function loadAcc(){
       fetch(BASE+'/api/accuracy').then(r=>r.json()),
       fetch(BASE+'/api/accuracy/rejections').then(r=>r.json()).catch(()=>null),
     ]);
-    const tot=acc.totalSignals||0,wr=acc.winRate||0,exp=acc.expectancy||0;
-    const gr=acc.grade||'—',aw=acc.avgWinPercent||0,al=acc.avgLossPercent||0;
-    const ww=rej?.wouldHaveWonPercent||0;
-    const gc=gr.includes('A')?'var(--green)':gr.includes('B')?'var(--teal2)':gr.includes('C')?'var(--amber)':'var(--red)';
+    const tot  = acc.totalSignals||0;
+    const buys = acc.buySignals||0;
+    const avds = acc.avoidSignals||0;
+    const wr   = acc.winRate||0;
+    const exp  = acc.expectancy||0;
+    const gr   = acc.grade||'—';
+    const aw   = acc.avgWinPercent||acc.avgWinPct||0;
+    const al   = acc.avgLossPercent||acc.avgLossPct||0;
+    const ht   = acc.hitTarget||0;
+    const hsl  = acc.hitSl||0;
+    const exp2 = acc.expired||0;
+    const ww   = rej?.wouldHaveWonPct||rej?.wouldHaveWonPercent||0;
+    const topRej= rej?.byReason?.[0]?.reason||'';
+    const gc   = gr.includes('A')?'var(--green)':gr.includes('B')?'var(--teal2)':gr.includes('C')?'var(--amber)':'var(--red)';
+
+    const noData = tot===0;
     document.getElementById('accDiv').innerHTML=`
+    ${noData?`<div class="card" style="background:rgba(245,158,11,.08);border-color:rgba(245,158,11,.3)">
+      <div style="font-size:14px;color:var(--amber);margin-bottom:8px">📊 No accuracy data yet</div>
+      <div style="font-size:12px;color:var(--muted);line-height:1.6">
+        Accuracy data starts recording once signals fire and 2+ hours pass for outcomes to fill.<br>
+        Today: VIX=27.9 (PANIC mode) → all signals are AVOID → still being recorded with entry/target/SL for tracking.<br>
+        Check back after a few hours, or visit <code style="color:var(--teal2)">/api/accuracy</code> directly.
+      </div>
+    </div>`:`
     <div class="sgrid">
       <div class="stat"><div class="sv2">${tot}</div><div class="sl3">Total logged</div></div>
-      <div class="stat"><div class="sv2" style="color:${wr>=50?'var(--green)':'var(--red)'}">${wr.toFixed(1)}%</div><div class="sl3">Win rate</div></div>
+      <div class="stat"><div class="sv2 pos">${buys}</div><div class="sl3">BUY signals</div></div>
+      <div class="stat"><div class="sv2 warn">${avds}</div><div class="sl3">AVOID signals</div></div>
+      <div class="stat"><div class="sv2" style="color:${wr>=50?'var(--green)':'var(--red)'}">${wr.toFixed(1)}%</div><div class="sl3">Win rate (BUY)</div></div>
       <div class="stat"><div class="sv2" style="color:${exp>0?'var(--green)':'var(--red)'}">${exp>0?'+':''}${exp.toFixed(2)}%</div><div class="sl3">Expectancy</div></div>
       <div class="stat"><div class="sv2" style="color:${gc}">${gr}</div><div class="sl3">Grade</div></div>
       <div class="stat"><div class="sv2 pos">+${aw.toFixed(2)}%</div><div class="sl3">Avg win</div></div>
       <div class="stat"><div class="sv2 neg">-${Math.abs(al).toFixed(2)}%</div><div class="sl3">Avg loss</div></div>
     </div>
-    ${ww>0?`<div class="card">
-      <div class="ctitle">AVOID Analysis — Were AVOID calls correct?</div>
-      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-        <div class="stat" style="min-width:130px"><div class="sv2" style="color:var(--amber)">${ww.toFixed(1)}%</div><div class="sl3">Would have won</div></div>
-        <div style="font-size:13px;color:${ww>60?'var(--amber)':'var(--green)'}">
-          ${ww>60?'⚠️ Gates too strict — loosen R:R gate at ₹5,000 capital':'✅ AVOID was correct — capital protected well'}
+    <div class="card">
+      <div class="ctitle">BUY Signal Outcomes</div>
+      <div style="display:flex;gap:16px;font-size:13px;flex-wrap:wrap">
+        <div>✅ Hit Target: <strong style="color:var(--green)">${ht}</strong></div>
+        <div>❌ Hit SL: <strong style="color:var(--red)">${hsl}</strong></div>
+        <div>⏳ Expired: <strong style="color:var(--muted)">${exp2}</strong></div>
+        <div>📊 Total BUY: <strong>${buys}</strong></div>
+      </div>
+    </div>`}
+    ${avds>0||ww>0?`<div class="card">
+      <div class="ctitle">🔍 AVOID Signal Analysis — Were AVOID calls correct?</div>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:12px">
+        All AVOID signals are logged with real entry/target/SL. Outcomes auto-filled 2 hours later.
+        This answers: "Was AVOID the right call, or would the trade have worked?"
+      </p>
+      <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+        <div class="stat" style="min-width:130px">
+          <div class="sv2" style="color:var(--amber)">${avds}</div>
+          <div class="sl3">AVOID logged</div>
         </div>
+        ${ww>0?`<div class="stat" style="min-width:130px">
+          <div class="sv2" style="color:${ww>60?'var(--amber)':'var(--green)'}">
+            ${ww.toFixed(1)}%
+          </div>
+          <div class="sl3">Would have won</div>
+        </div>
+        <div style="font-size:13px;color:${ww>60?'var(--amber)':'var(--green)'}">
+          ${ww>60
+            ?'⚠️ Many AVOID trades would have won — gates may be too strict. Consider loosening R:R gate when scaling to ₹5,000.'
+            :'✅ AVOID decisions were correct — capital was protected from losing trades.'}
+          ${topRej?`<br><span style="font-size:11px;color:var(--muted)">Top rejection reason: <strong style="color:var(--amber)">${topRej}</strong></span>`:''}
+        </div>`:'<div style="font-size:12px;color:var(--muted)">Outcomes fill 2 hours after each signal.</div>'}
       </div>
     </div>`:''}
     <div class="card">
       <div class="ctitle">How to read</div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:12px;color:var(--muted)">
-        <div><strong style="color:var(--teal2)">Expectancy &gt; 0</strong> — system has mathematical edge. Scale capital to ₹5,000.</div>
-        <div><strong style="color:var(--amber)">AVOID won &gt; 60%</strong> — loosen a gate. Check /api/accuracy/rejections for which one.</div>
-        <div><strong style="color:var(--green)">Win rate &gt; 50%</strong> — more wins than losses. With R:R 1:2, even 45% is profitable.</div>
-        <div><strong style="color:var(--muted)">2 weeks minimum</strong> — need 20+ signals before stats are meaningful.</div>
+        <div><strong style="color:var(--teal2)">Expectancy &gt; 0</strong> — system has mathematical edge. Safe to scale capital to ₹5,000.</div>
+        <div><strong style="color:var(--amber)">AVOID won &gt; 60%</strong> — loosen a gate. Visit /api/accuracy/rejections to see which gate.</div>
+        <div><strong style="color:var(--green)">Win rate &gt; 50%</strong> — more wins than losses. With R:R 1:2, even 45% win rate is profitable.</div>
+        <div><strong style="color:var(--muted)">Need 2 weeks</strong> — 20+ BUY signals for statistically meaningful data.</div>
       </div>
     </div>`;
   }catch(e){document.getElementById('accDiv').innerHTML='<div class="empty">⚠️ '+e.message+'</div>';}
