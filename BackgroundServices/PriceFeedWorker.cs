@@ -1,4 +1,4 @@
-﻿using AlgoSenseNSE.API.Hubs;
+using AlgoSenseNSE.API.Hubs;
 using AlgoSenseNSE.API.Services;
 using Microsoft.AspNetCore.SignalR;
 using Newtonsoft.Json.Linq;
@@ -15,7 +15,7 @@ namespace AlgoSenseNSE.API.BackgroundServices
             ILogger<PriceFeedWorker> logger)
         {
             _services = services;
-            _logger = logger;
+            _logger   = logger;
         }
 
         protected override async Task ExecuteAsync(CancellationToken ct)
@@ -25,17 +25,17 @@ namespace AlgoSenseNSE.API.BackgroundServices
             using var scope = _services.CreateScope();
             var sp = scope.ServiceProvider;
 
-            var scanner = sp.GetRequiredService<MarketScanService>();
-            var angelOne = sp.GetRequiredService<AngelOneService>();
-            var hub = sp.GetRequiredService<IHubContext<MarketHub>>();
-            var config = sp.GetRequiredService<IConfiguration>();
-            var alertEngine = sp.GetRequiredService<AlertEngine>();
-            var riskManager = sp.GetRequiredService<RiskManager>();
-            var telegram = sp.GetRequiredService<TelegramService>();
-            var wsService = sp.GetRequiredService<AngelOneWebSocketService>();
-            var screener = sp.GetRequiredService<StockScreenerService>();
+            var scanner       = sp.GetRequiredService<MarketScanService>();
+            var angelOne      = sp.GetRequiredService<AngelOneService>();
+            var hub           = sp.GetRequiredService<IHubContext<MarketHub>>();
+            var config        = sp.GetRequiredService<IConfiguration>();
+            var alertEngine   = sp.GetRequiredService<AlertEngine>();
+            var riskManager   = sp.GetRequiredService<RiskManager>();
+            var telegram      = sp.GetRequiredService<TelegramService>();
+            var wsService     = sp.GetRequiredService<AngelOneWebSocketService>();
+            var screener      = sp.GetRequiredService<StockScreenerService>();
             var signalTracker = sp.GetRequiredService<SignalTrackingService>();
-            var nse = sp.GetRequiredService<NseIndiaService>();
+            var nse           = sp.GetRequiredService<NseIndiaService>();
 
             var capital = config.GetValue<double>("Trading:Capital", 1500);
 
@@ -61,16 +61,16 @@ namespace AlgoSenseNSE.API.BackgroundServices
                 $"Time: {GetIST():HH:mm} IST\n\n" +
                 "Signals will start after 9:20 AM.");
 
-            int loopCount = 0;
-            const int indexEvery = 12;
+            int loopCount   = 0;
+            const int indexEvery   = 12;
             const int signalsEvery = 60;
-            const int screenEvery = 6;
+            const int screenEvery  = 6;
 
             while (!ct.IsCancellationRequested)
             {
                 try
                 {
-                    var ist = GetIST();
+                    var ist      = GetIST();
                     var isMarket = IsMarketOpen();
                     loopCount++;
 
@@ -106,12 +106,13 @@ namespace AlgoSenseNSE.API.BackgroundServices
 
                         var prices = scanner.GetLivePrices();
                         if (prices.Any())
-                            await hub.Clients.All.SendAsync("PricesUpdated", prices, ct);
+                            await hub.Clients.All.SendAsync(
+                                "PricesUpdated", prices, ct);
 
                         // Indices every 60s
                         if (loopCount % indexEvery == 0)
                         {
-                            var nifty = await angelOne.GetLiveIndexAsync("NSE", "26000");
+                            var nifty  = await angelOne.GetLiveIndexAsync("NSE", "26000");
                             var sensex = await angelOne.GetLiveIndexAsync("BSE", "1");
                             if (nifty != null || sensex != null)
                                 await hub.Clients.All.SendAsync("IndexUpdated",
@@ -121,53 +122,89 @@ namespace AlgoSenseNSE.API.BackgroundServices
                         // Signals + AI + Alerts every 5 min
                         if (loopCount % signalsEvery == 0)
                         {
-                            _logger.LogInformation("🔄 Refreshing intraday signals...");
-                            await scanner.RefreshIntradaySignalsAsync(tier1.Take(30).ToList());
+                            _logger.LogInformation(
+                                "🔄 Refreshing intraday signals...");
+                            await scanner.RefreshIntradaySignalsAsync(
+                                tier1.Take(30).ToList());
                             await scanner.RefreshRecommendationsAsync();
 
                             var recs = scanner.GetRecommendations();
-                            await hub.Clients.All.SendAsync("RecommendationsUpdated", recs, ct);
+                            await hub.Clients.All.SendAsync(
+                                "RecommendationsUpdated", recs, ct);
 
                             // Nifty LTP for alert context
                             double niftyLtp = 0;
                             try
                             {
-                                var nd = await angelOne.GetLiveIndexAsync("NSE", "26000");
+                                var nd = await angelOne
+                                    .GetLiveIndexAsync("NSE", "26000");
                                 if (nd != null)
-                                    niftyLtp = JObject.FromObject(nd)["ltp"]?.Value<double>() ?? 0;
+                                    niftyLtp = JObject.FromObject(nd)["ltp"]
+                                        ?.Value<double>() ?? 0;
                             }
                             catch { }
 
                             // Send alerts after 9:20 AM
-                            if (ist.Hour > 9 || (ist.Hour == 9 && ist.Minute >= 20))
+                            if (ist.Hour > 9 ||
+                                (ist.Hour == 9 && ist.Minute >= 20))
                             {
-                                await alertEngine.ProcessSignalsAsync(recs, niftyLtp, 0, capital);
+                                await alertEngine.ProcessSignalsAsync(
+                                    recs, niftyLtp, 0, capital);
 
-                                // Record BUY signals to SQLite
                                 var mktCtx = await nse.GetMarketContextAsync();
-                                foreach (var rec in recs.Where(r =>
-                                    r.AiAnalysis?.Recommendation == "BUY"))
+
+                                // ─────────────────────────────────────────
+                                // Record ALL top 5 recommendations to SQLite
+                                // — both BUY and AVOID get logged
+                                //
+                                // WHY: AVOID signals now have real ATR-based
+                                // entry/target/SL (not zeros). Recording them
+                                // lets /api/accuracy answer:
+                                //   "Was AVOID correct? Would it have hit target?"
+                                //
+                                // After 2 weeks, /api/accuracy/rejections shows
+                                // wouldHaveWonPct — if > 60%, loosen that gate.
+                                // ─────────────────────────────────────────
+                                foreach (var rec in recs
+                                    .Take(5)
+                                    .Where(r => r.AiAnalysis != null
+                                             && r.Stock.LastPrice > 0
+                                             && r.AiAnalysis.Entry  > 0
+                                             && r.AiAnalysis.Target > 0
+                                             && r.AiAnalysis.StopLoss > 0))
                                 {
-                                    try { await signalTracker.RecordSignalAsync(rec, mktCtx); }
-                                    catch { }
+                                    try
+                                    {
+                                        await signalTracker
+                                            .RecordSignalAsync(rec, mktCtx);
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        _logger.LogWarning(
+                                            "⚠️ RecordSignal failed {sym}: {msg}",
+                                            rec.Stock.Symbol, ex.Message);
+                                    }
                                 }
 
-                                // Fill outcomes for signals 2+ hrs old
-                                await signalTracker.FillOutcomesAsync(async (sym) =>
-                                {
-                                    var lp = scanner.GetLivePrice(sym);
-                                    return lp?.LTP ?? 0;
-                                });
+                                // Fill outcomes for signals 2+ hours old
+                                await signalTracker.FillOutcomesAsync(
+                                    async (sym) =>
+                                    {
+                                        var lp = scanner.GetLivePrice(sym);
+                                        return lp?.LTP ?? 0;
+                                    });
                             }
 
-                            await hub.Clients.All.SendAsync("AlertsUpdated",
+                            await hub.Clients.All.SendAsync(
+                                "AlertsUpdated",
                                 alertEngine.GetAlertHistory(), ct);
 
-                            // Entry triggers for locked picks
                             var triggers = scanner.GetEntryTriggers();
                             if (triggers.Any())
-                                _logger.LogInformation("🎯 Entry triggers: {syms}",
-                                    string.Join(", ", triggers.Select(t => t.Symbol)));
+                                _logger.LogInformation(
+                                    "🎯 Entry triggers: {syms}",
+                                    string.Join(", ",
+                                        triggers.Select(t => t.Symbol)));
                         }
                     }
                     else
@@ -175,15 +212,19 @@ namespace AlgoSenseNSE.API.BackgroundServices
                         // Outside market hours
                         if (loopCount % indexEvery == 0)
                         {
-                            var nifty = await angelOne.GetLiveIndexAsync("NSE", "26000");
-                            var sensex = await angelOne.GetLiveIndexAsync("BSE", "1");
+                            var nifty  = await angelOne
+                                .GetLiveIndexAsync("NSE", "26000");
+                            var sensex = await angelOne
+                                .GetLiveIndexAsync("BSE", "1");
                             if (nifty != null || sensex != null)
-                                await hub.Clients.All.SendAsync("IndexUpdated",
+                                await hub.Clients.All.SendAsync(
+                                    "IndexUpdated",
                                     new { nifty, sensex }, ct);
                         }
 
                         // Pre-market scan at 8:45 AM
-                        if (ist.Hour == 8 && ist.Minute == 45 && loopCount % indexEvery == 0)
+                        if (ist.Hour == 8 && ist.Minute == 45 &&
+                            loopCount % indexEvery == 0)
                         {
                             _logger.LogInformation("⏰ Pre-market scan...");
                             await scanner.RunFullDailyScanAsync();
@@ -227,7 +268,8 @@ namespace AlgoSenseNSE.API.BackgroundServices
             try
             {
                 return TimeZoneInfo.ConvertTime(DateTime.UtcNow,
-                    TimeZoneInfo.FindSystemTimeZoneById("India Standard Time"));
+                    TimeZoneInfo.FindSystemTimeZoneById(
+                        "India Standard Time"));
             }
             catch { return DateTime.UtcNow.AddHours(5).AddMinutes(30); }
         }
