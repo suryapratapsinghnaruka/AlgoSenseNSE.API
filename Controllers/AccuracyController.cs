@@ -62,40 +62,45 @@ namespace AlgoSenseNSE.API.Controllers
 
             return Ok(new
             {
-                period       = $"Last {days} days",
-                generatedAt  = DateTime.Now,
+                period        = $"Last {days} days",
+                generatedAt   = DateTime.Now,
 
-                // Core metrics
-                totalSignals = stats.TotalSignals,
-                hitTarget    = stats.HitTarget,
-                hitSl        = stats.HitSl,
-                expired      = stats.Expired,
+                // Total signals logged (BUY + AVOID)
+                totalSignals  = stats.TotalSignals,
+                buySignals    = stats.BuySignals,
+                avoidSignals  = stats.AvoidSignals,
 
-                // Rates
-                winRate      = Math.Round(winRate  * 100, 1),
-                lossRate     = Math.Round(lossRate * 100, 1),
+                // BUY outcomes
+                hitTarget     = stats.HitTarget,
+                hitSl         = stats.HitSl,
+                expired       = stats.Expired,
+
+                // Win rates (on BUY signals only)
+                winRate       = Math.Round(winRate  * 100, 1),
+                lossRate      = Math.Round(lossRate * 100, 1),
 
                 // P&L
-                avgWinPct    = Math.Round(stats.AvgProfitPct, 2),
-                avgLossPct   = Math.Round(stats.AvgLossPct,   2),
-                totalPnlRs   = Math.Round(stats.TotalPnlRs,   2),
+                avgWinPercent  = Math.Round(stats.AvgProfitPct, 2),
+                avgLossPercent = Math.Round(stats.AvgLossPct,   2),
+                totalPnlRs     = Math.Round(stats.TotalPnlRs,   2),
 
-                // Advanced
-                expectancyPct = Math.Round(expectancy, 2),
-                grade         = grade,
-                advice        = advice,
+                // Edge metrics
+                expectancy     = Math.Round(expectancy, 2),
+                grade          = grade,
+                advice         = advice,
 
                 // Today
-                alertsToday  = _alerts.GetAlertsToday(),
-                dailyPnl     = _alerts.GetDailyPnL(),
+                alertsToday    = _alerts.GetAlertsToday(),
+                dailyPnl       = _alerts.GetDailyPnL(),
 
-                // Explanation
                 howToRead = new
                 {
-                    expectancy  = "Expectancy > 0 means system has edge. " +
-                                  "> 1.0% = strong.",
-                    winRate     = "Win rate > 50% is good, but R:R matters more.",
-                    grade       = "Based on expectancy per trade."
+                    totalSignals  = "BUY + AVOID combined. Both logged for accuracy measurement.",
+                    buySignals    = "Signals where system said BUY. Win rate calculated on these.",
+                    avoidSignals  = "Signals where system said AVOID. Check /api/accuracy/rejections to see if they would have won.",
+                    expectancy    = "Expectancy > 0 = system has edge. > 1.0% = strong edge.",
+                    winRate       = "Win rate > 50% is good. With R:R 1:2, even 45% is profitable.",
+                    grade         = "A = strong edge, B = positive, C = marginal, D = need more data."
                 }
             });
         }
