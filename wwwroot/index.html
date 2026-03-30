@@ -327,6 +327,31 @@
 <script>
 const BASE = '';  // same origin
 
+// ── Index update ─────────────────────────────────────
+function updateIndex(d) {
+  if (!d) return;
+  const nifty  = d.nifty  || d.Nifty  || {};
+  const sensex = d.sensex || d.Sensex || {};
+
+  const nl  = nifty.ltp           || nifty.LTP           || nifty.lTP  || 0;
+  const nc  = nifty.changePercent || nifty.ChangePercent || 0;
+  const sl  = sensex.ltp          || sensex.LTP          || sensex.lTP || 0;
+  const sc2 = sensex.changePercent|| sensex.ChangePercent|| 0;
+
+  const nEl = document.getElementById('niftyVal');
+  const sEl = document.getElementById('sensexVal');
+  if (nEl && nl) {
+    nEl.textContent = nl.toLocaleString('en-IN', {maximumFractionDigits:2}) +
+      ' (' + (nc >= 0 ? '+' : '') + nc.toFixed(2) + '%)';
+    nEl.className = 'index-val ' + (nc >= 0 ? 'pos' : 'neg');
+  }
+  if (sEl && sl) {
+    sEl.textContent = sl.toLocaleString('en-IN', {maximumFractionDigits:2}) +
+      ' (' + (sc2 >= 0 ? '+' : '') + sc2.toFixed(2) + '%)';
+    sEl.className = 'index-val ' + (sc2 >= 0 ? 'pos' : 'neg');
+  }
+}
+
 // ── SignalR ───────────────────────────────────────────
 const conn = new signalR.HubConnectionBuilder()
   .withUrl('/marketHub')
@@ -339,14 +364,33 @@ conn.onclose(() => setStatus(false, 'Disconnected'));
 
 conn.on('PricesUpdated',         () => {});
 conn.on('IndexUpdated',          d  => updateIndex(d));
-conn.on('RecommendationsUpdated',d  => renderSignals(d));
+conn.on('RecommendationsUpdated',d  => {
+  const recs = d && d.recommendations ? d.recommendations : (Array.isArray(d) ? d : []);
+  renderSignals(recs);
+  if (d && (d.marketContext || d.MarketContext)) renderRegime(d.marketContext || d.MarketContext, d);
+});
 conn.on('AlertsUpdated',         d  => renderAlerts(d));
 conn.on('NewsUpdated',           d  => renderNews(d));
 conn.on('ScreenerUpdated',       d  => renderScreener(d));
 
 conn.start()
-  .then(() => { setStatus(true, 'Live'); loadDashboard(); })
-  .catch(() => { setStatus(false, 'Offline — using REST'); loadDashboard(); });
+  .then(() => { setStatus(true, 'Live'); loadDashboard(); loadIndexREST(); })
+  .catch(() => { setStatus(false, 'Offline — using REST'); loadDashboard(); loadIndexREST(); });
+
+async function loadIndexREST() {
+  try {
+    const data = await fetch(BASE + '/api/recommendations').then(r => r.json());
+    const mkt  = data.marketContext || data.MarketContext || {};
+    const nl   = mkt.niftyLtp || mkt.NiftyLtp || 0;
+    const nc   = mkt.niftyChange || mkt.NiftyChange || 0;
+    const vix  = mkt.indiaVix || mkt.IndiaVix || 0;
+    if (nl) updateIndex({ nifty: { ltp: nl, changePercent: nc } });
+    if (vix) {
+      document.getElementById('vixVal').textContent = vix.toFixed(1);
+      document.getElementById('vixVal').className = vix > 22 ? 'neg' : vix > 17 ? '' : 'pos';
+    }
+  } catch(e) {}
+}
 
 function setStatus(live, text) {
   document.getElementById('statusDot').className  = 'status-dot' + (live ? ' live' : '');
@@ -367,12 +411,21 @@ function showPage(name) {
 // ── Load dashboard ────────────────────────────────────
 async function loadDashboard() {
   try {
-    const [recs, mkt] = await Promise.all([
-      fetch(BASE + '/api/recommendations').then(r => r.json()),
-      fetch(BASE + '/api/market/context').then(r => r.json()),
-    ]);
-    renderRegime(mkt);
-    renderSignals(recs);
+    // /api/recommendations returns { recommendations:[...], marketContext:{...}, ... }
+    const data = await fetch(BASE + '/api/recommendations').then(r => r.json());
+    const recs = data.recommendations || data.Recommendations || data || [];
+    const mkt  = data.marketContext   || data.MarketContext   || null;
+
+    // Also try /api/market/context separately for regime
+    let mktFull = mkt;
+    if (!mktFull || (!mktFull.indiaVix && !mktFull.IndiaVix)) {
+      try {
+        mktFull = await fetch(BASE + '/api/market/context').then(r => r.json());
+      } catch(e2) {}
+    }
+
+    renderRegime(mktFull || mkt, data);
+    renderSignals(Array.isArray(recs) ? recs : []);
   } catch(e) {
     document.getElementById('signalGrid').innerHTML =
       '<div class="empty">⚠️ Failed to load — ' + e.message + '</div>';
@@ -380,16 +433,26 @@ async function loadDashboard() {
 }
 
 // ── Regime banner ─────────────────────────────────────
-function renderRegime(mkt) {
+function renderRegime(mkt, fullData) {
   if (!mkt) return;
-  const regime  = (mkt.regime || mkt.Regime || 'UNKNOWN').toUpperCase();
-  const nifty   = mkt.niftyChange ?? mkt.NiftyChange ?? 0;
-  const vix     = mkt.indiaVix    ?? mkt.IndiaVix    ?? 0;
-  const fii     = mkt.fiiNetCrore ?? mkt.FiiNetCrore ?? 0;
-  const quality = mkt.marketQualityScore ?? mkt.MarketQualityScore ?? 0;
+
+  // API marketContext uses: niftyChange, indiaVix, marketQuality, fiiNet
+  const nifty   = mkt.niftyChange        ?? mkt.NiftyChange        ?? 0;
+  const vix     = mkt.indiaVix           ?? mkt.IndiaVix           ?? 0;
+  const fii     = mkt.fiiNet             ?? mkt.FiiNet             ?? mkt.fiiNetCrore ?? mkt.FiiNetCrore ?? 0;
+  const quality = mkt.marketQuality      ?? mkt.MarketQuality      ?? mkt.marketQualityScore ?? mkt.MarketQualityScore ?? 0;
+  const trend   = mkt.niftyTrend         ?? mkt.NiftyTrend         ?? '';
+
+  // Derive regime from market data
+  let regime = 'UNKNOWN';
+  if (quality <= 25 || vix > 25)       regime = 'PANIC';
+  else if (nifty < -1.0)               regime = 'TREND_DOWN';
+  else if (vix <= 22 && nifty >= 0.3)  regime = 'TREND';
+  else if (vix <= 22)                  regime = 'RANGE';
+  else                                 regime = 'PANIC';
 
   document.getElementById('vixVal').textContent  = vix.toFixed(1);
-  document.getElementById('vixVal').className    = vix > 22 ? 'neg' : vix > 17 ? 'amber' : 'pos';
+  document.getElementById('vixVal').className    = vix > 22 ? 'neg' : vix > 17 ? '' : 'pos';
 
   const b = document.getElementById('regimeBanner');
   b.className = 'regime-banner ' + regime.toLowerCase().replace('_','').replace(' ','');
@@ -411,6 +474,7 @@ function renderRegime(mkt) {
 
 // ── Signal cards (BUY + AVOID both show prices) ───────
 function renderSignals(recs) {
+  console.log('renderSignals called with', recs?.length, 'items', recs?.[0]?.stock?.symbol || recs?.[0]?.Stock?.Symbol || 'no symbol');
   if (!recs || !recs.length) {
     const ist = new Date(new Date().toLocaleString("en-US", {timeZone:"Asia/Kolkata"}));
     const h = ist.getHours(), m = ist.getMinutes();
@@ -440,10 +504,12 @@ function renderSignals(recs) {
     'Updated ' + new Date().toLocaleTimeString('en-IN', {hour:'2-digit',minute:'2-digit'});
 
   const html = recs.slice(0, 5).map(rec => {
-    const ai    = rec.aiAnalysis || rec.AiAnalysis || {};
-    const stock = rec.stock      || rec.Stock      || {};
-    const tech  = rec.technical  || rec.Technical  || {};
-    const score = rec.score      || rec.Score      || {};
+    // API returns camelCase: aiAnalysis, stock, technical, score
+    const ai    = rec.aiAnalysis  || rec.AiAnalysis  || {};
+    const stock = rec.stock       || rec.Stock       || {};
+    const tech  = rec.technical   || rec.Technical   || {};
+    const score = rec.score       || rec.Score       || {};
+    const fund  = rec.fundamental || rec.Fundamental || {};
 
     const sym    = stock.symbol        || stock.Symbol        || '—';
     const price  = stock.lastPrice     || stock.LastPrice     || 0;
@@ -788,4 +854,3 @@ async function forceRefresh() {
 </script>
 </body>
 </html>
-
