@@ -4,853 +4,610 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AlgoSense NSE</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/7.0.5/signalr.min.js"></script>
 <style>
   :root {
-    --navy:   #1E2761;
-    --teal:   #0D9488;
-    --teal2:  #14B8A6;
-    --teal3:  #CCFBF1;
-    --green:  #10B981;
-    --red:    #EF4444;
-    --amber:  #F59E0B;
-    --purple: #7C3AED;
-    --dark:   #1E293B;
-    --slate:  #475569;
-    --mid:    #E2E8F0;
-    --light:  #F8FAFC;
-    --bg:     #0F172A;
-    --card:   #1E293B;
-    --card2:  #162032;
-    --border: #2D3F55;
-    --text:   #E2E8F0;
-    --muted:  #94A3B8;
+    --navy:"#1E2761"; --teal:#0D9488; --teal2:#14B8A6; --teal3:#CCFBF1;
+    --green:#10B981; --red:#EF4444; --amber:#F59E0B; --purple:#7C3AED;
+    --bg:#0F172A; --card:#1E293B; --card2:#162032; --border:#2D3F55;
+    --text:#E2E8F0; --muted:#94A3B8; --light:#F8FAFC;
   }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', Arial, sans-serif; font-size: 14px; }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font-family:'Segoe UI',Arial,sans-serif;font-size:14px}
 
-  /* ── Top bar ─────────────────────────────── */
-  .topbar {
-    background: var(--card);
-    border-bottom: 1px solid var(--border);
-    padding: 10px 20px;
-    display: flex; align-items: center; justify-content: space-between;
-    position: sticky; top: 0; z-index: 100;
-  }
-  .topbar-left { display: flex; align-items: center; gap: 16px; }
-  .logo { font-size: 18px; font-weight: 700; color: var(--teal2); }
-  .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #64748B; display: inline-block; }
-  .status-dot.live { background: var(--green); box-shadow: 0 0 6px var(--green); }
-  .status-text { font-size: 12px; color: var(--muted); }
-  .index-bar { display: flex; gap: 20px; }
-  .index-item { text-align: center; }
-  .index-name { font-size: 10px; color: var(--muted); }
-  .index-val  { font-size: 13px; font-weight: 600; }
-  .pos { color: var(--green); }
-  .neg { color: var(--red); }
-  .neu { color: var(--text); }
-  .vix-badge { background: var(--card2); border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; font-size: 12px; }
+  .topbar{background:var(--card);border-bottom:1px solid var(--border);padding:10px 20px;
+    display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
+  .logo{font-size:18px;font-weight:700;color:var(--teal2)}
+  .status-dot{width:8px;height:8px;border-radius:50%;background:#64748B;display:inline-block}
+  .status-dot.live{background:var(--green);box-shadow:0 0 6px var(--green)}
+  .status-text{font-size:12px;color:var(--muted);margin-left:6px}
+  .index-bar{display:flex;gap:20px;align-items:center}
+  .index-item{text-align:center}
+  .index-name{font-size:10px;color:var(--muted)}
+  .index-val{font-size:13px;font-weight:600}
+  .pos{color:var(--green)} .neg{color:var(--red)} .warn{color:var(--amber)}
+  .vix-badge{background:var(--card2);border:1px solid var(--border);border-radius:6px;padding:4px 10px;font-size:12px;font-weight:600}
 
-  /* ── Tabs ────────────────────────────────── */
-  .tabs { display: flex; gap: 4px; padding: 12px 20px 0; border-bottom: 1px solid var(--border); }
-  .tab { padding: 8px 18px; border-radius: 6px 6px 0 0; cursor: pointer; font-size: 13px; font-weight: 500; color: var(--muted); background: transparent; border: none; border-bottom: 2px solid transparent; }
-  .tab.active { color: var(--teal2); border-bottom: 2px solid var(--teal2); background: rgba(13,148,136,0.08); }
-  .tab:hover:not(.active) { color: var(--text); }
+  .tabs{display:flex;gap:4px;padding:12px 20px 0;border-bottom:1px solid var(--border)}
+  .tab{padding:8px 18px;border-radius:6px 6px 0 0;cursor:pointer;font-size:13px;font-weight:500;
+    color:var(--muted);background:transparent;border:none;border-bottom:2px solid transparent}
+  .tab.active{color:var(--teal2);border-bottom:2px solid var(--teal2);background:rgba(13,148,136,.08)}
+  .tab:hover:not(.active){color:var(--text)}
 
-  /* ── Layout ──────────────────────────────── */
-  .page { display: none; padding: 16px 20px; }
-  .page.active { display: block; }
+  .page{display:none;padding:16px 20px}
+  .page.active{display:block}
 
-  /* ── Cards ───────────────────────────────── */
-  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 12px; }
-  .card-title { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 10px; }
+  .card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:12px}
+  .card-title{font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.8px;margin-bottom:10px}
 
-  /* ── Regime banner ───────────────────────── */
-  .regime-banner { border-radius: 8px; padding: 10px 16px; margin-bottom: 12px; display: flex; align-items: center; justify-content: space-between; }
-  .regime-banner.trend    { background: rgba(16,185,129,0.15); border: 1px solid rgba(16,185,129,0.4); }
-  .regime-banner.range    { background: rgba(245,158,11,0.15); border: 1px solid rgba(245,158,11,0.4); }
-  .regime-banner.panic    { background: rgba(239,68,68,0.20);  border: 1px solid rgba(239,68,68,0.5); }
-  .regime-banner.trend_down { background: rgba(239,68,68,0.15); border: 1px solid rgba(239,68,68,0.4); }
-  .regime-banner.unknown  { background: rgba(100,116,139,0.15); border: 1px solid var(--border); }
+  /* Regime */
+  .regime{border-radius:8px;padding:10px 16px;margin-bottom:12px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px}
+  .regime.panic    {background:rgba(239,68,68,.18);border:1px solid rgba(239,68,68,.5)}
+  .regime.trend    {background:rgba(16,185,129,.15);border:1px solid rgba(16,185,129,.4)}
+  .regime.range    {background:rgba(245,158,11,.15);border:1px solid rgba(245,158,11,.4)}
+  .regime.trenddown{background:rgba(239,68,68,.15);border:1px solid rgba(239,68,68,.4)}
+  .regime.unknown  {background:rgba(100,116,139,.15);border:1px solid var(--border)}
 
-  /* ── Signal cards ────────────────────────── */
-  .signal-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; }
+  /* Signal grid */
+  .signal-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px}
 
-  .signal-card {
-    background: var(--card2);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    overflow: hidden;
-    transition: box-shadow 0.2s;
-  }
-  .signal-card:hover { box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
-  .signal-card.buy  { border-top: 3px solid var(--green); }
-  .signal-card.avoid{ border-top: 3px solid var(--amber); }
+  .sig{background:var(--card2);border:1px solid var(--border);border-radius:10px;overflow:hidden}
+  .sig.buy  {border-top:3px solid var(--green)}
+  .sig.avoid{border-top:3px solid var(--amber)}
 
-  .signal-header {
-    padding: 12px 14px 8px;
-    display: flex; align-items: center; justify-content: space-between;
-  }
-  .signal-symbol { font-size: 17px; font-weight: 700; color: var(--text); }
-  .signal-price  { font-size: 13px; color: var(--muted); margin-top: 2px; }
+  .sig-hdr{padding:12px 14px 8px;display:flex;align-items:flex-start;justify-content:space-between}
+  .sig-sym{font-size:17px;font-weight:700}
+  .sig-price{font-size:12px;color:var(--muted);margin-top:3px}
 
-  .rec-badge {
-    padding: 4px 12px; border-radius: 20px; font-size: 11px; font-weight: 700; letter-spacing: 0.5px;
-  }
-  .rec-badge.buy   { background: rgba(16,185,129,0.2); color: var(--green); border: 1px solid rgba(16,185,129,0.4); }
-  .rec-badge.avoid { background: rgba(245,158,11,0.2); color: var(--amber); border: 1px solid rgba(245,158,11,0.4); }
+  .rec-badge{padding:4px 12px;border-radius:20px;font-size:11px;font-weight:700;letter-spacing:.5px}
+  .rec-badge.buy  {background:rgba(16,185,129,.2);color:var(--green);border:1px solid rgba(16,185,129,.4)}
+  .rec-badge.avoid{background:rgba(245,158,11,.2);color:var(--amber);border:1px solid rgba(245,158,11,.4)}
 
-  /* ── Price levels — THE KEY SECTION ─────── */
-  .price-levels {
-    margin: 0 14px 10px;
-    background: rgba(0,0,0,0.25);
-    border-radius: 8px;
-    padding: 10px 12px;
-    display: grid;
-    grid-template-columns: 1fr 1fr 1fr;
-    gap: 8px;
-  }
-  .price-level { text-align: center; }
-  .price-level-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 3px; }
-  .price-level-val   { font-size: 15px; font-weight: 700; }
-  .price-level-val.entry  { color: var(--text); }
-  .price-level-val.target { color: var(--green); }
-  .price-level-val.sl     { color: var(--red); }
-  .price-level-pct { font-size: 10px; color: var(--muted); margin-top: 1px; }
+  /* Price levels — KEY SECTION */
+  .prices{margin:0 14px 10px;background:rgba(0,0,0,.28);border-radius:8px;padding:10px 12px;
+    display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+  .price-col{text-align:center}
+  .price-lbl{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px}
+  .price-val{font-size:15px;font-weight:700}
+  .price-val.e{color:var(--text)}
+  .price-val.t{color:var(--green)}
+  .price-val.s{color:var(--red)}
+  .price-pct{font-size:10px;color:var(--muted);margin-top:2px}
 
-  .avoid-note {
-    margin: 0 14px 8px;
-    background: rgba(245,158,11,0.08);
-    border: 1px solid rgba(245,158,11,0.25);
-    border-radius: 6px;
-    padding: 6px 10px;
-    font-size: 11px;
-    color: var(--amber);
-    display: flex; align-items: flex-start; gap: 6px;
-  }
+  .avoid-note{margin:0 14px 8px;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.25);
+    border-radius:6px;padding:6px 10px;font-size:11px;color:var(--amber)}
 
-  /* ── Scores row ──────────────────────────── */
-  .scores-row {
-    margin: 0 14px 10px;
-    display: flex; gap: 6px;
-  }
-  .score-chip {
-    flex: 1; text-align: center; background: rgba(0,0,0,0.2); border-radius: 6px; padding: 6px 4px;
-    border: 1px solid var(--border);
-  }
-  .score-chip-val  { font-size: 14px; font-weight: 700; }
-  .score-chip-label{ font-size: 9px; color: var(--muted); text-transform: uppercase; margin-top: 1px; }
+  .scores{margin:0 14px 10px;display:flex;gap:6px}
+  .sc{flex:1;text-align:center;background:rgba(0,0,0,.2);border-radius:6px;padding:6px 4px;border:1px solid var(--border)}
+  .sc-val{font-size:14px;font-weight:700}
+  .sc-lbl{font-size:9px;color:var(--muted);text-transform:uppercase;margin-top:1px}
 
-  /* ── Meta row ────────────────────────────── */
-  .signal-meta {
-    padding: 8px 14px 12px;
-    border-top: 1px solid var(--border);
-    display: flex; justify-content: space-between; align-items: center;
-    flex-wrap: wrap; gap: 6px;
-  }
-  .meta-item { font-size: 11px; color: var(--muted); }
-  .meta-item span { color: var(--text); font-weight: 500; }
-  .rr-badge { padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
-  .rr-good  { background: rgba(16,185,129,0.15); color: var(--green); }
-  .rr-bad   { background: rgba(239,68,68,0.15);  color: var(--red); }
-  .rr-na    { background: rgba(100,116,139,0.15); color: var(--muted); }
+  .sig-meta{padding:8px 14px 12px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px}
+  .meta-item{font-size:11px;color:var(--muted)}
+  .meta-item span{color:var(--text);font-weight:500}
+  .rr{padding:3px 8px;border-radius:4px;font-size:11px;font-weight:600}
+  .rr.good{background:rgba(16,185,129,.15);color:var(--green)}
+  .rr.bad {background:rgba(239,68,68,.15);color:var(--red)}
+  .rr.na  {background:rgba(100,116,139,.15);color:var(--muted)}
 
-  /* ── Reason/summary ──────────────────────── */
-  .signal-summary {
-    padding: 6px 14px 12px;
-    font-size: 12px; color: var(--muted); line-height: 1.4;
-  }
+  .sig-sum{padding:0 14px 12px;font-size:12px;color:var(--muted);line-height:1.4}
 
-  /* ── Accuracy panel ──────────────────────── */
-  .stat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px,1fr)); gap: 10px; margin-bottom: 12px; }
-  .stat-box  { background: var(--card2); border: 1px solid var(--border); border-radius: 8px; padding: 14px; text-align: center; }
-  .stat-val  { font-size: 22px; font-weight: 700; margin-bottom: 4px; }
-  .stat-label{ font-size: 11px; color: var(--muted); }
+  /* Accuracy */
+  .stat-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px;margin-bottom:12px}
+  .stat{background:var(--card2);border:1px solid var(--border);border-radius:8px;padding:14px;text-align:center}
+  .stat-val{font-size:22px;font-weight:700;margin-bottom:4px}
+  .stat-lbl{font-size:11px;color:var(--muted)}
 
-  /* ── Screener table ──────────────────────── */
-  table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  th { background: var(--card); color: var(--muted); font-size: 11px; text-transform: uppercase; padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--border); position: sticky; top: 0; }
-  td { padding: 8px 12px; border-bottom: 1px solid rgba(45,63,85,0.5); }
-  tr:hover td { background: rgba(255,255,255,0.03); }
+  /* Tables */
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{background:var(--card);color:var(--muted);font-size:11px;text-transform:uppercase;
+    padding:8px 12px;text-align:left;border-bottom:1px solid var(--border)}
+  td{padding:8px 12px;border-bottom:1px solid rgba(45,63,85,.5)}
+  tr:hover td{background:rgba(255,255,255,.03)}
 
-  /* ── News ────────────────────────────────── */
-  .news-item { padding: 10px 0; border-bottom: 1px solid var(--border); display: flex; gap: 10px; align-items: flex-start; }
-  .news-sentiment { padding: 3px 8px; border-radius: 10px; font-size: 10px; font-weight: 600; white-space: nowrap; }
-  .news-sentiment.positive { background: rgba(16,185,129,0.15); color: var(--green); }
-  .news-sentiment.negative { background: rgba(239,68,68,0.15); color: var(--red); }
-  .news-sentiment.neutral  { background: rgba(100,116,139,0.15); color: var(--muted); }
-  .news-headline { font-size: 13px; line-height: 1.4; }
-  .news-meta { font-size: 11px; color: var(--muted); margin-top: 3px; }
+  /* News */
+  .news-item{padding:10px 0;border-bottom:1px solid var(--border);display:flex;gap:10px;align-items:flex-start}
+  .ns{padding:3px 8px;border-radius:10px;font-size:10px;font-weight:600;white-space:nowrap}
+  .ns.positive{background:rgba(16,185,129,.15);color:var(--green)}
+  .ns.negative{background:rgba(239,68,68,.15);color:var(--red)}
+  .ns.neutral {background:rgba(100,116,139,.15);color:var(--muted)}
 
-  /* ── Alerts panel ────────────────────────── */
-  .alert-item { padding: 12px; background: var(--card2); border-radius: 8px; margin-bottom: 8px; border-left: 3px solid var(--green); }
-  .alert-item.avoid { border-left-color: var(--amber); }
-  .alert-header { display: flex; justify-content: space-between; margin-bottom: 6px; }
-  .alert-symbol { font-size: 15px; font-weight: 700; }
-  .alert-time   { font-size: 11px; color: var(--muted); }
-  .alert-prices { display: flex; gap: 12px; font-size: 12px; flex-wrap: wrap; }
-  .alert-price-item { background: rgba(0,0,0,0.2); padding: 4px 8px; border-radius: 4px; }
+  /* Alerts */
+  .alert-item{padding:12px;background:var(--card2);border-radius:8px;margin-bottom:8px;border-left:3px solid var(--green)}
+  .alert-prices{display:flex;gap:10px;font-size:12px;flex-wrap:wrap;margin-top:6px}
+  .ap{background:rgba(0,0,0,.25);padding:4px 8px;border-radius:4px}
 
-  /* ── Loading ─────────────────────────────── */
-  .empty { text-align: center; padding: 40px; color: var(--muted); font-size: 13px; }
-  .loader { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--teal); border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: middle; }
-  @keyframes spin { to { transform: rotate(360deg); } }
+  .empty{text-align:center;padding:40px;color:var(--muted);font-size:13px}
+  .loader{display:inline-block;width:14px;height:14px;border:2px solid var(--border);
+    border-top-color:var(--teal);border-radius:50%;animation:spin .8s linear infinite;vertical-align:middle}
+  @keyframes spin{to{transform:rotate(360deg)}}
 
-  .chip { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 500; }
-  .chip-teal   { background: rgba(13,148,136,0.15); color: var(--teal2); }
-  .chip-green  { background: rgba(16,185,129,0.15); color: var(--green); }
-  .chip-red    { background: rgba(239,68,68,0.15); color: var(--red); }
-  .chip-amber  { background: rgba(245,158,11,0.15); color: var(--amber); }
-  .chip-purple { background: rgba(124,58,237,0.15); color: #A78BFA; }
-  .chip-muted  { background: rgba(100,116,139,0.15); color: var(--muted); }
+  .chip{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:500}
+  .chip-g{background:rgba(16,185,129,.15);color:var(--green)}
+  .chip-r{background:rgba(239,68,68,.15);color:var(--red)}
+  .chip-a{background:rgba(245,158,11,.15);color:var(--amber)}
+  .chip-m{background:rgba(100,116,139,.15);color:var(--muted)}
 
-  .refresh-btn { background: none; border: 1px solid var(--border); color: var(--muted); padding: 5px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; }
-  .refresh-btn:hover { color: var(--text); border-color: var(--teal); }
+  .btn{background:none;border:1px solid var(--border);color:var(--muted);padding:5px 12px;
+    border-radius:6px;cursor:pointer;font-size:12px}
+  .btn:hover{color:var(--text);border-color:var(--teal)}
+  .btn-teal{background:rgba(13,148,136,.15);border-color:var(--teal);color:var(--teal2);font-weight:600;padding:6px 14px}
+
+  .sector-pill{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;margin:2px;
+    background:rgba(239,68,68,.12);color:#FCA5A5;border:1px solid rgba(239,68,68,.2)}
+  .sector-pill.pos{background:rgba(16,185,129,.12);color:#6EE7B7;border-color:rgba(16,185,129,.2)}
 </style>
 </head>
 <body>
 
-<!-- ── Top Bar ──────────────────────────────────────── -->
 <div class="topbar">
-  <div class="topbar-left">
+  <div style="display:flex;align-items:center;gap:16px">
     <div class="logo">AlgoSense NSE</div>
-    <div style="display:flex;align-items:center;gap:6px">
-      <span class="status-dot" id="statusDot"></span>
-      <span class="status-text" id="statusText">Connecting…</span>
+    <div style="display:flex;align-items:center">
+      <span class="status-dot" id="sDot"></span>
+      <span class="status-text" id="sTxt">Loading…</span>
     </div>
   </div>
   <div class="index-bar">
-    <div class="index-item">
-      <div class="index-name">NIFTY 50</div>
-      <div class="index-val" id="niftyVal">—</div>
-    </div>
-    <div class="index-item">
-      <div class="index-name">SENSEX</div>
-      <div class="index-val" id="sensexVal">—</div>
-    </div>
-    <div class="vix-badge">VIX <span id="vixVal">—</span></div>
+    <div class="index-item"><div class="index-name">NIFTY 50</div><div class="index-val" id="nVal">—</div></div>
+    <div class="index-item"><div class="index-name">SENSEX</div><div class="index-val" id="sVal">—</div></div>
+    <div class="vix-badge">VIX <span id="vixVal" class="warn">—</span></div>
   </div>
 </div>
 
-<!-- ── Tabs ─────────────────────────────────────────── -->
 <div class="tabs">
-  <button class="tab active" onclick="showPage('dashboard')">📊 Dashboard</button>
-  <button class="tab"        onclick="showPage('screener')">🔍 Screener</button>
-  <button class="tab"        onclick="showPage('news')">📰 News</button>
-  <button class="tab"        onclick="showPage('alerts')">🚨 Alerts</button>
-  <button class="tab"        onclick="showPage('accuracy')">🎯 Accuracy</button>
+  <button class="tab active" data-page="dashboard">📊 Dashboard</button>
+  <button class="tab" data-page="screener">🔍 Screener</button>
+  <button class="tab" data-page="news">📰 News</button>
+  <button class="tab" data-page="alerts">🚨 Alerts</button>
+  <button class="tab" data-page="accuracy">🎯 Accuracy</button>
 </div>
 
-<!-- ══════════════════════════════════════════════════ -->
-<!-- DASHBOARD PAGE                                     -->
-<!-- ══════════════════════════════════════════════════ -->
+<!-- DASHBOARD -->
 <div id="page-dashboard" class="page active">
-
-  <!-- Regime banner -->
-  <div class="regime-banner unknown" id="regimeBanner">
+  <div class="regime unknown" id="regime">
     <div>
-      <strong id="regimeLabel">Loading market context…</strong>
-      <span id="regimeDetail" style="font-size:12px;color:var(--muted);margin-left:10px"></span>
+      <strong id="regime-lbl">Loading market…</strong>
+      <span id="regime-detail" style="font-size:12px;color:var(--muted);margin-left:10px"></span>
     </div>
-    <div style="display:flex;gap:8px;align-items:center">
-      <span id="niftyChip" class="chip chip-muted">Nifty —</span>
-      <span id="fiiChip"   class="chip chip-muted">FII —</span>
-      <button class="refresh-btn" onclick="loadDashboard()">↻ Refresh</button>
-    </div>
-  </div>
-
-  <!-- Top 3 signals -->
-  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">
-    <div style="font-size:13px;color:var(--muted)">Top recommendations — BUY and AVOID with prices</div>
-    <div style="display:flex;align-items:center;gap:10px">
-      <span id="lastUpdated" style="font-size:11px;color:var(--muted)"></span>
-      <button id="forceRefreshBtn" class="refresh-btn" onclick="forceRefresh()"
-        style="background:rgba(13,148,136,0.15);border-color:var(--teal);color:var(--teal2);padding:6px 14px;font-size:12px;font-weight:600">
-        ⚡ Force Scan Now
-      </button>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <span id="nChip" class="chip chip-m">Nifty —</span>
+      <span id="fChip" class="chip chip-m">FII —</span>
+      <div id="sectors-row" style="display:flex;flex-wrap:wrap;gap:2px"></div>
+      <button class="btn" onclick="loadDash()">↻</button>
+      <button class="btn btn-teal" id="fsBtn" onclick="forceScan()">⚡ Force Scan Now</button>
     </div>
   </div>
-
-  <div class="signal-grid" id="signalGrid">
-    <div class="empty"><span class="loader"></span> Loading signals…</div>
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+    <div style="font-size:13px;color:var(--muted)">Top 5 — BUY &amp; AVOID with entry / target / stop loss</div>
+    <div id="lastUp" style="font-size:11px;color:var(--muted)"></div>
   </div>
+  <div class="signal-grid" id="sigGrid"><div class="empty"><span class="loader"></span></div></div>
 </div>
 
-<!-- ══════════════════════════════════════════════════ -->
-<!-- SCREENER PAGE                                      -->
-<!-- ══════════════════════════════════════════════════ -->
+<!-- SCREENER -->
 <div id="page-screener" class="page">
   <div class="card">
-    <div class="card-title">Dynamic Stock Universe — Affordable stocks within your budget</div>
-    <div id="screenerSummary" style="font-size:12px;color:var(--muted);margin-bottom:10px">Loading…</div>
+    <div class="card-title">Dynamic Stock Universe</div>
+    <div id="scrSum" style="font-size:12px;color:var(--muted);margin-bottom:10px">Loading…</div>
     <div style="overflow-x:auto">
-      <table>
-        <thead>
-          <tr>
-            <th>Symbol</th><th>Price</th><th>Change</th>
-            <th>Volume</th><th>Momentum</th><th>Tier</th>
-          </tr>
-        </thead>
-        <tbody id="screenerTable"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
-      </table>
+      <table><thead><tr><th>Symbol</th><th>Price</th><th>Change</th><th>Volume</th><th>Momentum</th><th>Tier</th></tr></thead>
+      <tbody id="scrTbl"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody></table>
     </div>
   </div>
 </div>
 
-<!-- ══════════════════════════════════════════════════ -->
-<!-- NEWS PAGE                                          -->
-<!-- ══════════════════════════════════════════════════ -->
+<!-- NEWS -->
 <div id="page-news" class="page">
   <div class="card">
-    <div class="card-title">Live News — 6 sources + NSE announcements</div>
-    <div id="newsList"><div class="empty">Loading…</div></div>
+    <div class="card-title">Live News</div>
+    <div id="newsDiv"><div class="empty">Loading…</div></div>
   </div>
 </div>
 
-<!-- ══════════════════════════════════════════════════ -->
-<!-- ALERTS PAGE                                        -->
-<!-- ══════════════════════════════════════════════════ -->
+<!-- ALERTS -->
 <div id="page-alerts" class="page">
   <div class="card">
-    <div class="card-title">Today's Alerts — BUY signals sent to Telegram</div>
-    <div id="alertsList"><div class="empty">No alerts fired today yet.</div></div>
+    <div class="card-title">Today's BUY Alerts</div>
+    <div id="alertsDiv"><div class="empty">No alerts fired today.</div></div>
   </div>
 </div>
 
-<!-- ══════════════════════════════════════════════════ -->
-<!-- ACCURACY PAGE                                      -->
-<!-- ══════════════════════════════════════════════════ -->
+<!-- ACCURACY -->
 <div id="page-accuracy" class="page">
-  <div id="accuracyStats"><div class="empty"><span class="loader"></span> Loading accuracy data…</div></div>
+  <div id="accDiv"><div class="empty"><span class="loader"></span></div></div>
 </div>
 
 <script>
-const BASE = '';  // same origin
+const BASE = '';
 
-// ── Index update ─────────────────────────────────────
-function updateIndex(d) {
-  if (!d) return;
-  const nifty  = d.nifty  || d.Nifty  || {};
-  const sensex = d.sensex || d.Sensex || {};
+// ── helpers ──────────────────────────────────────────
+const v  = (o,...ks) => { for(const k of ks){ const r=o?.[k]; if(r!==undefined&&r!==null)return r; } return null; };
+const n2 = x => (x||0).toFixed(2);
+const fmt = x => x>0 ? '₹'+x.toLocaleString('en-IN',{maximumFractionDigits:2}) : '—';
+const pct  = (a,b) => b>0 ? ((a-b)/b*100).toFixed(1)+'%' : '—';
+const sc   = x => x>=70?'var(--green)':x>=50?'var(--amber)':'var(--red)';
 
-  const nl  = nifty.ltp           || nifty.LTP           || nifty.lTP  || 0;
-  const nc  = nifty.changePercent || nifty.ChangePercent || 0;
-  const sl  = sensex.ltp          || sensex.LTP          || sensex.lTP || 0;
-  const sc2 = sensex.changePercent|| sensex.ChangePercent|| 0;
-
-  const nEl = document.getElementById('niftyVal');
-  const sEl = document.getElementById('sensexVal');
-  if (nEl && nl) {
-    nEl.textContent = nl.toLocaleString('en-IN', {maximumFractionDigits:2}) +
-      ' (' + (nc >= 0 ? '+' : '') + nc.toFixed(2) + '%)';
-    nEl.className = 'index-val ' + (nc >= 0 ? 'pos' : 'neg');
-  }
-  if (sEl && sl) {
-    sEl.textContent = sl.toLocaleString('en-IN', {maximumFractionDigits:2}) +
-      ' (' + (sc2 >= 0 ? '+' : '') + sc2.toFixed(2) + '%)';
-    sEl.className = 'index-val ' + (sc2 >= 0 ? 'pos' : 'neg');
-  }
-}
-
-// ── SignalR ───────────────────────────────────────────
-const conn = new signalR.HubConnectionBuilder()
-  .withUrl('/marketHub')
-  .withAutomaticReconnect()
-  .build();
-
-conn.onreconnecting(() => setStatus(false, 'Reconnecting…'));
-conn.onreconnected(() => setStatus(true, 'Live'));
-conn.onclose(() => setStatus(false, 'Disconnected'));
-
-conn.on('PricesUpdated',         () => {});
-conn.on('IndexUpdated',          d  => updateIndex(d));
-conn.on('RecommendationsUpdated',d  => {
-  const recs = d && d.recommendations ? d.recommendations : (Array.isArray(d) ? d : []);
-  renderSignals(recs);
-  if (d && (d.marketContext || d.MarketContext)) renderRegime(d.marketContext || d.MarketContext, d);
-});
-conn.on('AlertsUpdated',         d  => renderAlerts(d));
-conn.on('NewsUpdated',           d  => renderNews(d));
-conn.on('ScreenerUpdated',       d  => renderScreener(d));
-
-conn.start()
-  .then(() => { setStatus(true, 'Live'); loadDashboard(); loadIndexREST(); })
-  .catch(() => { setStatus(false, 'Offline — using REST'); loadDashboard(); loadIndexREST(); });
-
-async function loadIndexREST() {
-  try {
-    const data = await fetch(BASE + '/api/recommendations').then(r => r.json());
-    const mkt  = data.marketContext || data.MarketContext || {};
-    const nl   = mkt.niftyLtp || mkt.NiftyLtp || 0;
-    const nc   = mkt.niftyChange || mkt.NiftyChange || 0;
-    const vix  = mkt.indiaVix || mkt.IndiaVix || 0;
-    if (nl) updateIndex({ nifty: { ltp: nl, changePercent: nc } });
-    if (vix) {
-      document.getElementById('vixVal').textContent = vix.toFixed(1);
-      document.getElementById('vixVal').className = vix > 22 ? 'neg' : vix > 17 ? '' : 'pos';
-    }
-  } catch(e) {}
-}
-
-function setStatus(live, text) {
-  document.getElementById('statusDot').className  = 'status-dot' + (live ? ' live' : '');
-  document.getElementById('statusText').textContent = text;
+function setStatus(live,txt){
+  document.getElementById('sDot').className='status-dot'+(live?' live':'');
+  document.getElementById('sTxt').textContent=txt;
 }
 
 // ── Tabs ──────────────────────────────────────────────
-function showPage(name) {
-  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-  document.getElementById('page-' + name).classList.add('active');
-  event.target.classList.add('active');
-  if (name === 'accuracy')  loadAccuracy();
-  if (name === 'news')      loadNews();
-  if (name === 'screener')  loadScreener();
+document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', e => {
+  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+  document.querySelectorAll('.page').forEach(x=>x.classList.remove('active'));
+  t.classList.add('active');
+  const pg = t.dataset.page;
+  document.getElementById('page-'+pg).classList.add('active');
+  if(pg==='accuracy') loadAcc();
+  if(pg==='news')     loadNews();
+  if(pg==='screener') loadScreener();
+  if(pg==='alerts')   loadAlerts();
+}));
+
+// ── Main load ─────────────────────────────────────────
+async function loadDash(){
+  try {
+    const data = await fetch(BASE+'/api/recommendations').then(r=>r.json());
+
+    // Extract recs — API wraps in { recommendations:[...], marketContext:{...} }
+    const recs = v(data,'recommendations','Recommendations') || [];
+    const mkt  = v(data,'marketContext','MarketContext') || {};
+
+    renderRegime(mkt);
+    renderSignals(recs, mkt);
+    updateTopbar(mkt);
+  } catch(e) {
+    setStatus(false,'REST error');
+    document.getElementById('sigGrid').innerHTML=
+      '<div class="empty">⚠️ '+e.message+'</div>';
+  }
 }
 
-// ── Load dashboard ────────────────────────────────────
-async function loadDashboard() {
+// Also load full market context for richer data
+async function loadMarketCtx(){
   try {
-    // /api/recommendations returns { recommendations:[...], marketContext:{...}, ... }
-    const data = await fetch(BASE + '/api/recommendations').then(r => r.json());
-    const recs = data.recommendations || data.Recommendations || data || [];
-    const mkt  = data.marketContext   || data.MarketContext   || null;
+    const mkt = await fetch(BASE+'/api/market/context').then(r=>r.json());
+    updateTopbar(mkt);
+    renderRegime(mkt);
+  } catch(e){}
+}
 
-    // Also try /api/market/context separately for regime
-    let mktFull = mkt;
-    if (!mktFull || (!mktFull.indiaVix && !mktFull.IndiaVix)) {
-      try {
-        mktFull = await fetch(BASE + '/api/market/context').then(r => r.json());
-      } catch(e2) {}
-    }
+function updateTopbar(mkt){
+  if(!mkt) return;
+  // /api/market/context uses: niftyLtp, niftyChange, indiaVix, fiiNetCrore
+  // /api/recommendations marketContext uses: niftyLtp, niftyChange, indiaVix, fiiNet
+  const nl  = v(mkt,'niftyLtp','NiftyLtp') || 0;
+  const nc  = v(mkt,'niftyChange','NiftyChange') || 0;
+  const vix = v(mkt,'indiaVix','IndiaVix') || 0;
 
-    renderRegime(mktFull || mkt, data);
-    renderSignals(Array.isArray(recs) ? recs : []);
-  } catch(e) {
-    document.getElementById('signalGrid').innerHTML =
-      '<div class="empty">⚠️ Failed to load — ' + e.message + '</div>';
+  if(nl){
+    const nEl=document.getElementById('nVal');
+    nEl.textContent = nl.toLocaleString('en-IN',{maximumFractionDigits:2})+
+      ' ('+(nc>=0?'+':'')+n2(nc)+'%)';
+    nEl.className='index-val '+(nc>=0?'pos':'neg');
+  }
+  if(vix){
+    const vEl=document.getElementById('vixVal');
+    vEl.textContent=vix.toFixed(1);
+    vEl.className=vix>22?'neg':vix>17?'warn':'pos';
   }
 }
 
 // ── Regime banner ─────────────────────────────────────
-function renderRegime(mkt, fullData) {
-  if (!mkt) return;
+function renderRegime(mkt){
+  if(!mkt) return;
+  const nc  = v(mkt,'niftyChange','NiftyChange') || 0;
+  const vix = v(mkt,'indiaVix','IndiaVix') || 0;
+  const fii = v(mkt,'fiiNetCrore','FiiNetCrore','fiiNet','FiiNet') || 0;
+  const q   = v(mkt,'marketQualityScore','MarketQualityScore','marketQuality','MarketQuality') || 0;
 
-  // API marketContext uses: niftyChange, indiaVix, marketQuality, fiiNet
-  const nifty   = mkt.niftyChange        ?? mkt.NiftyChange        ?? 0;
-  const vix     = mkt.indiaVix           ?? mkt.IndiaVix           ?? 0;
-  const fii     = mkt.fiiNet             ?? mkt.FiiNet             ?? mkt.fiiNetCrore ?? mkt.FiiNetCrore ?? 0;
-  const quality = mkt.marketQuality      ?? mkt.MarketQuality      ?? mkt.marketQualityScore ?? mkt.MarketQualityScore ?? 0;
-  const trend   = mkt.niftyTrend         ?? mkt.NiftyTrend         ?? '';
+  let regime='unknown', icon='⏳', label='Loading…';
+  if      (vix>25||q<=25)        { regime='panic';     icon='🚨'; label='PANIC — Stay out'; }
+  else if (nc<-1.0)               { regime='trenddown'; icon='📉'; label='TREND DOWN — No longs'; }
+  else if (vix<=22&&nc>=0.3)      { regime='trend';     icon='📈'; label='TREND — Best conditions'; }
+  else if (vix<=22)               { regime='range';     icon='↔️'; label='RANGE — Tighter filters'; }
+  else                            { regime='panic';     icon='⚠️'; label='HIGH FEAR — Caution'; }
 
-  // Derive regime from market data
-  let regime = 'UNKNOWN';
-  if (quality <= 25 || vix > 25)       regime = 'PANIC';
-  else if (nifty < -1.0)               regime = 'TREND_DOWN';
-  else if (vix <= 22 && nifty >= 0.3)  regime = 'TREND';
-  else if (vix <= 22)                  regime = 'RANGE';
-  else                                 regime = 'PANIC';
+  const b=document.getElementById('regime');
+  b.className='regime '+regime;
+  document.getElementById('regime-lbl').textContent=icon+' '+label+' | Quality: '+q+'/100';
+  document.getElementById('regime-detail').textContent=
+    'VIX: '+vix.toFixed(1)+' | Nifty: '+(nc>=0?'+':'')+n2(nc)+'%';
 
-  document.getElementById('vixVal').textContent  = vix.toFixed(1);
-  document.getElementById('vixVal').className    = vix > 22 ? 'neg' : vix > 17 ? '' : 'pos';
+  const nc2=document.getElementById('nChip');
+  nc2.textContent='Nifty '+(nc>=0?'+':'')+n2(nc)+'%';
+  nc2.className='chip '+(nc>=0.3?'chip-g':nc<=-0.3?'chip-r':'chip-m');
 
-  const b = document.getElementById('regimeBanner');
-  b.className = 'regime-banner ' + regime.toLowerCase().replace('_','').replace(' ','');
+  const fc=document.getElementById('fChip');
+  fc.textContent='FII ₹'+(fii>=0?'+':'')+Math.round(fii)+'Cr';
+  fc.className='chip '+(fii>0?'chip-g':fii<0?'chip-r':'chip-m');
 
-  const icons = { TREND:'📈', RANGE:'↔️', PANIC:'🚨', TREND_DOWN:'📉', UNKNOWN:'⏳' };
-  document.getElementById('regimeLabel').textContent =
-    (icons[regime] || '📊') + ' ' + regime + ' DAY — Quality: ' + quality + '/100';
-  document.getElementById('regimeDetail').textContent =
-    'VIX: ' + vix.toFixed(1) + ' | Nifty: ' + (nifty >= 0 ? '+' : '') + nifty.toFixed(2) + '%';
-
-  const nc = nifty >= 0.3 ? 'chip-green' : nifty <= -0.3 ? 'chip-red' : 'chip-muted';
-  document.getElementById('niftyChip').className = 'chip ' + nc;
-  document.getElementById('niftyChip').textContent = 'Nifty ' + (nifty >= 0 ? '+' : '') + nifty.toFixed(2) + '%';
-
-  const fc = fii > 0 ? 'chip-green' : fii < 0 ? 'chip-red' : 'chip-muted';
-  document.getElementById('fiiChip').className = 'chip ' + fc;
-  document.getElementById('fiiChip').textContent = 'FII ₹' + (fii >= 0 ? '+' : '') + Math.round(fii) + 'Cr';
+  // Sectors
+  const sectors = v(mkt,'sectors','Sectors') || [];
+  const weak    = v(mkt,'weakSectors','WeakSectors') || [];
+  const sr=document.getElementById('sectors-row');
+  if(sectors.length){
+    sr.innerHTML=sectors.slice(0,4).map(s=>
+      `<span class="sector-pill${s.isPositive||s.IsPositive?' pos':''}">${s.sectorName||s.SectorName} ${(s.changePercent||s.ChangePercent||0).toFixed(1)}%</span>`
+    ).join('');
+  } else if(weak.length){
+    sr.innerHTML=weak.slice(0,3).map(w=>`<span class="sector-pill">${w}</span>`).join('');
+  }
 }
 
-// ── Signal cards (BUY + AVOID both show prices) ───────
-function renderSignals(recs) {
-  console.log('renderSignals called with', recs?.length, 'items', recs?.[0]?.stock?.symbol || recs?.[0]?.Stock?.Symbol || 'no symbol');
-  if (!recs || !recs.length) {
-    const ist = new Date(new Date().toLocaleString("en-US", {timeZone:"Asia/Kolkata"}));
-    const h = ist.getHours(), m = ist.getMinutes();
-    const isMarket = (h > 9 || (h === 9 && m >= 20)) && (h < 15 || (h === 15 && m <= 30));
-    const msg = isMarket
+// ── Signal cards ──────────────────────────────────────
+function renderSignals(recs, mkt){
+  if(!recs||!recs.length){
+    const ist=new Date(new Date().toLocaleString('en-US',{timeZone:'Asia/Kolkata'}));
+    const h=ist.getHours(),m=ist.getMinutes();
+    const open=(h>9||(h===9&&m>=20))&&(h<15||(h===15&&m<=30));
+    document.getElementById('sigGrid').innerHTML = open
       ? `<div class="empty">
            <div style="font-size:32px;margin-bottom:12px">⏳</div>
-           <div style="font-weight:600;margin-bottom:8px">Market is open — signals loading</div>
+           <div style="font-weight:600;margin-bottom:8px">Market open — signals loading</div>
            <div style="font-size:12px;color:var(--muted);margin-bottom:16px">
-             Signals refresh every 5 minutes. First scan runs at loopCount=60 (~5 min after startup).<br>
-             If this persists, click Force Scan Now.
+             First scan runs ~5 min after startup. Click Force Scan Now to trigger immediately.
            </div>
-           <button onclick="forceRefresh()" style="background:rgba(13,148,136,0.2);border:1px solid var(--teal);color:var(--teal2);padding:8px 20px;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600">
-             ⚡ Force Scan Now
-           </button>
+           <button onclick="forceScan()" class="btn btn-teal">⚡ Force Scan Now</button>
          </div>`
-      : `<div class="empty">
-           <div style="font-size:32px;margin-bottom:12px">🌙</div>
-           <div style="font-weight:600;margin-bottom:8px">Market closed</div>
-           <div style="font-size:12px;color:var(--muted)">Signals fire between 9:20 AM – 3:10 PM IST</div>
-         </div>`;
-    document.getElementById('signalGrid').innerHTML = msg;
+      : `<div class="empty"><div style="font-size:32px;margin-bottom:8px">🌙</div>
+           Market closed — signals fire 9:20 AM–3:10 PM IST</div>`;
     return;
   }
 
-  document.getElementById('lastUpdated').textContent =
-    'Updated ' + new Date().toLocaleTimeString('en-IN', {hour:'2-digit',minute:'2-digit'});
+  document.getElementById('lastUp').textContent =
+    'Updated '+new Date().toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'});
 
-  const html = recs.slice(0, 5).map(rec => {
-    // API returns camelCase: aiAnalysis, stock, technical, score
-    const ai    = rec.aiAnalysis  || rec.AiAnalysis  || {};
-    const stock = rec.stock       || rec.Stock       || {};
-    const tech  = rec.technical   || rec.Technical   || {};
-    const score = rec.score       || rec.Score       || {};
-    const fund  = rec.fundamental || rec.Fundamental || {};
+  document.getElementById('sigGrid').innerHTML = recs.slice(0,5).map(rec => {
+    const ai    = v(rec,'aiAnalysis','AiAnalysis') || {};
+    const stk   = v(rec,'stock','Stock') || {};
+    const score = v(rec,'score','Score') || {};
+    const tech  = v(rec,'technical','Technical') || {};
 
-    const sym    = stock.symbol        || stock.Symbol        || '—';
-    const price  = stock.lastPrice     || stock.LastPrice     || 0;
-    const chg    = stock.changePercent || stock.ChangePercent || 0;
-    const rec2   = (ai.recommendation  || ai.Recommendation  || 'AVOID').toUpperCase();
-    const entry  = ai.entry   || ai.Entry   || 0;
-    const target = ai.target  || ai.Target  || 0;
-    const sl     = ai.stopLoss|| ai.StopLoss|| 0;
-    const rr     = ai.riskReward || ai.RiskReward || 'N/A';
-    const conf   = ai.confidence || ai.Confidence || 0;
-    const summary= ai.summary    || ai.Summary    || (ai.blockReason || '');
+    const sym   = v(stk,'symbol','Symbol') || '—';
+    const ltp   = v(stk,'lastPrice','LastPrice') || 0;
+    const chg   = v(stk,'changePercent','ChangePercent') || 0;
+    const high  = v(stk,'high','High') || 0;
+    const low   = v(stk,'low','Low') || 0;
 
-    const tScore = score.technicalScore  || score.TechnicalScore  || 0;
-    const fScore = score.fundamentalScore|| score.FundamentalScore|| 0;
-    const nScore = score.newsScore       || score.NewsScore       || 0;
-    const total  = score.finalScore      || score.FinalScore      || 0;
+    const rec2  = (v(ai,'recommendation','Recommendation')||'AVOID').toUpperCase();
+    const isBuy = rec2==='BUY';
 
-    const isBuy   = rec2 === 'BUY';
-    const chgClass = chg >= 0 ? 'pos' : 'neg';
-    const chgSign  = chg >= 0 ? '+' : '';
+    // Entry/target/SL — use aiAnalysis if available, else fall back to technical suggestedTarget
+    let entry  = v(ai,'entry','Entry') || 0;
+    let target = v(ai,'target','Target') || 0;
+    let sl     = v(ai,'stopLoss','StopLoss') || 0;
 
-    // % move to target and SL from entry
-    const tgtPct = entry > 0 ? ((target - entry) / entry * 100).toFixed(1) : '—';
-    const slPct  = entry > 0 ? ((sl - entry)     / entry * 100).toFixed(1) : '—';
-    const rrClass = rr === 'N/A' ? 'rr-na' : parseFloat(rr.split(':')[1] || 0) >= 2 ? 'rr-good' : 'rr-bad';
+    // If backend returned zeros (old code), use technical suggested values
+    if(target===0) target = v(tech,'suggestedTarget','SuggestedTarget') || 0;
+    if(sl===0)     sl     = v(tech,'suggestedStopLoss','SuggestedStopLoss') || 0;
+    if(entry===0)  entry  = ltp || 0;
 
-    // Score chip color
-    const sc = n => n >= 70 ? '#10B981' : n >= 50 ? '#F59E0B' : '#EF4444';
+    const rr    = v(ai,'riskReward','RiskReward') || 'N/A';
+    const conf  = v(ai,'confidence','Confidence') || 55;
+    const sum   = v(ai,'summary','Summary') || '';
+
+    const ts = v(score,'technicalScore','TechnicalScore') || 0;
+    const fs = v(score,'fundamentalScore','FundamentalScore') || 0;
+    const ns = v(score,'newsScore','NewsScore') || 0;
+    const tot= v(score,'finalScore','FinalScore') || 0;
+
+    const tPct = entry>0&&target>0 ? (((target-entry)/entry)*100).toFixed(1) : null;
+    const sPct = entry>0&&sl>0     ? (((sl-entry)/entry)*100).toFixed(1) : null;
+    const rrN  = rr==='N/A'?0:parseFloat((rr.split(':')[1])||0);
+    const rrCls= rrN>=2?'good':rrN>0?'bad':'na';
+
+    const atr  = v(tech,'atr','ATR') || 0;
+    const adx  = v(tech,'adx','ADX') || 0;
+    const rsi  = v(tech,'rsi','RSI') || 0;
+    const vwap = v(tech,'vwap','VWAP') || 0;
 
     return `
-    <div class="signal-card ${isBuy ? 'buy' : 'avoid'}">
-      <div class="signal-header">
+    <div class="sig ${isBuy?'buy':'avoid'}">
+      <div class="sig-hdr">
         <div>
-          <div class="signal-symbol">${sym}</div>
-          <div class="signal-price">
-            ₹${price.toFixed(2)}
-            <span class="${chgClass}" style="margin-left:6px;font-size:12px">
-              ${chgSign}${chg.toFixed(2)}%
-            </span>
+          <div class="sig-sym">${sym}</div>
+          <div class="sig-price">
+            ${ltp>0?'₹'+ltp.toFixed(2):'Price loading…'}
+            ${ltp>0?`<span class="${chg>=0?'pos':'neg'}" style="margin-left:6px">${chg>=0?'+':''}${chg.toFixed(2)}%</span>`:''}
+            ${high>0?`<span style="font-size:10px;color:var(--muted);margin-left:6px">H:${high.toFixed(1)} L:${low.toFixed(1)}</span>`:''}
           </div>
         </div>
         <div style="text-align:right">
-          <span class="rec-badge ${isBuy ? 'buy' : 'avoid'}">${rec2}</span>
+          <span class="rec-badge ${isBuy?'buy':'avoid'}">${rec2}</span>
           <div style="font-size:11px;color:var(--muted);margin-top:4px">Conf: ${conf}%</div>
         </div>
       </div>
 
-      <!-- ── Price levels — shown for ALL signals ── -->
-      <div class="price-levels">
-        <div class="price-level">
-          <div class="price-level-label">Entry</div>
-          <div class="price-level-val entry">₹${entry > 0 ? entry.toFixed(2) : '—'}</div>
-          <div class="price-level-pct">Market order</div>
+      <div class="prices">
+        <div class="price-col">
+          <div class="price-lbl">Entry</div>
+          <div class="price-val e">${entry>0?fmt(entry):'—'}</div>
+          <div class="price-pct">Slippage adj.</div>
         </div>
-        <div class="price-level">
-          <div class="price-level-label">Target</div>
-          <div class="price-level-val target">₹${target > 0 ? target.toFixed(2) : '—'}</div>
-          <div class="price-level-pct">${tgtPct !== '—' ? '+' + tgtPct + '%' : '—'}</div>
+        <div class="price-col">
+          <div class="price-lbl">Target</div>
+          <div class="price-val t">${target>0?fmt(target):'—'}</div>
+          <div class="price-pct">${tPct?'+'+tPct+'%':'—'}</div>
         </div>
-        <div class="price-level">
-          <div class="price-level-label">Stop Loss</div>
-          <div class="price-level-val sl">₹${sl > 0 ? sl.toFixed(2) : '—'}</div>
-          <div class="price-level-pct">${slPct !== '—' ? slPct + '%' : '—'}</div>
-        </div>
-      </div>
-
-      <!-- AVOID note — explains these are hypothetical -->
-      ${!isBuy ? `
-      <div class="avoid-note">
-        ⚠️ <span><strong>AVOID</strong> — prices are hypothetical for accuracy tracking only. Do NOT trade this signal.</span>
-      </div>` : ''}
-
-      <!-- Scores -->
-      <div class="scores-row">
-        <div class="score-chip">
-          <div class="score-chip-val" style="color:${sc(tScore)}">${Math.round(tScore)}</div>
-          <div class="score-chip-label">Tech</div>
-        </div>
-        <div class="score-chip">
-          <div class="score-chip-val" style="color:${sc(fScore)}">${Math.round(fScore)}</div>
-          <div class="score-chip-label">Fund</div>
-        </div>
-        <div class="score-chip">
-          <div class="score-chip-val" style="color:${sc(nScore)}">${Math.round(nScore)}</div>
-          <div class="score-chip-label">News</div>
-        </div>
-        <div class="score-chip" style="background:rgba(13,148,136,0.1);border-color:rgba(13,148,136,0.3)">
-          <div class="score-chip-val" style="color:var(--teal2)">${Math.round(total)}</div>
-          <div class="score-chip-label">Total</div>
+        <div class="price-col">
+          <div class="price-lbl">Stop Loss</div>
+          <div class="price-val s">${sl>0?fmt(sl):'—'}</div>
+          <div class="price-pct">${sPct?sPct+'%':'—'}</div>
         </div>
       </div>
 
-      <!-- R:R + summary -->
-      <div class="signal-meta">
-        <div class="meta-item">R:R <span class="rr-badge ${rrClass}">${rr}</span></div>
-        ${entry > 0 && isBuy ? `<div class="meta-item">Net ≈ <span>${ai.expectedProfit || ai.ExpectedProfit || '—'}</span></div>` : ''}
-        <div class="meta-item">${ai.timeHorizon || ai.TimeHorizon || (isBuy ? 'Exit by 15:10' : 'AVOID')}</div>
+      ${!isBuy?`<div class="avoid-note">⚠️ <strong>AVOID</strong> — prices shown for accuracy tracking only. Reason: ${sum||'Blocked by rule engine'}</div>`:''}
+
+      <div class="scores">
+        <div class="sc"><div class="sc-val" style="color:${sc(ts)}">${Math.round(ts)}</div><div class="sc-lbl">Tech</div></div>
+        <div class="sc"><div class="sc-val" style="color:${sc(fs)}">${Math.round(fs)}</div><div class="sc-lbl">Fund</div></div>
+        <div class="sc"><div class="sc-val" style="color:${sc(ns)}">${Math.round(ns)}</div><div class="sc-lbl">News</div></div>
+        <div class="sc" style="background:rgba(13,148,136,.1);border-color:rgba(13,148,136,.3)">
+          <div class="sc-val" style="color:var(--teal2)">${Math.round(tot)}</div><div class="sc-lbl">Total</div>
+        </div>
       </div>
 
-      ${summary ? `<div class="signal-summary">${summary}</div>` : ''}
+      <div class="sig-meta">
+        <div class="meta-item">R:R <span class="rr ${rrCls}">${rr}</span></div>
+        ${adx>0?`<div class="meta-item">ADX <span>${adx.toFixed(0)}</span></div>`:''}
+        ${rsi>0?`<div class="meta-item">RSI <span>${rsi.toFixed(1)}</span></div>`:''}
+        ${vwap>0?`<div class="meta-item">VWAP <span>₹${vwap.toFixed(ltp>100?0:2)}</span></div>`:''}
+        ${atr>0?`<div class="meta-item">ATR <span>${atr.toFixed(ltp>100?1:3)}</span></div>`:''}
+      </div>
+
+      ${sum&&isBuy?`<div class="sig-sum">${sum}</div>`:''}
     </div>`;
   }).join('');
+}
 
-  document.getElementById('signalGrid').innerHTML = html;
+// ── Force scan ────────────────────────────────────────
+async function forceScan(){
+  const btn=document.getElementById('fsBtn');
+  if(btn){btn.textContent='⏳ Scanning…';btn.disabled=true;}
+  try{
+    await fetch(BASE+'/api/recommendations/refresh',{method:'POST'}).catch(()=>{});
+    await new Promise(r=>setTimeout(r,4000));
+    await loadDash();
+  }finally{
+    if(btn){btn.textContent='⚡ Force Scan Now';btn.disabled=false;}
+  }
 }
 
 // ── Alerts ────────────────────────────────────────────
-function renderAlerts(alerts) {
-  if (!alerts || !alerts.length) {
-    document.getElementById('alertsList').innerHTML =
-      '<div class="empty">No BUY alerts fired today yet.</div>';
-    return;
-  }
-  document.getElementById('alertsList').innerHTML = alerts.map(a => {
-    const sym    = a.symbol    || a.Symbol    || '—';
-    const entry  = a.entry     || a.Entry     || 0;
-    const target = a.target    || a.Target    || 0;
-    const sl     = a.stopLoss  || a.StopLoss  || 0;
-    const rr     = a.riskReward|| a.RiskReward|| 'N/A';
-    const time   = a.firedAt   || a.FiredAt   || '';
-    const profit = a.expectedProfit || a.ExpectedProfit || '';
-    return `
-    <div class="alert-item">
-      <div class="alert-header">
-        <div class="alert-symbol">🚨 BUY — ${sym}</div>
-        <div class="alert-time">${time}</div>
-      </div>
-      <div class="alert-prices">
-        <div class="alert-price-item">Entry <strong>₹${entry.toFixed(2)}</strong></div>
-        <div class="alert-price-item" style="color:var(--green)">Target <strong>₹${target.toFixed(2)}</strong></div>
-        <div class="alert-price-item" style="color:var(--red)">SL <strong>₹${sl.toFixed(2)}</strong></div>
-        <div class="alert-price-item">R:R <strong>${rr}</strong></div>
-        ${profit ? `<div class="alert-price-item" style="color:var(--green)">${profit}</div>` : ''}
-      </div>
-    </div>`;
-  }).join('');
+async function loadAlerts(){
+  try{
+    const data=await fetch(BASE+'/api/recommendations').then(r=>r.json());
+    const alerts=v(data,'recentAlerts','RecentAlerts')||[];
+    if(!alerts.length){
+      document.getElementById('alertsDiv').innerHTML='<div class="empty">No BUY alerts today yet.</div>';
+      return;
+    }
+    document.getElementById('alertsDiv').innerHTML=alerts.map(a=>`
+      <div class="alert-item">
+        <div style="display:flex;justify-content:space-between">
+          <strong>🚨 BUY — ${v(a,'symbol','Symbol')}</strong>
+          <span style="font-size:11px;color:var(--muted)">${v(a,'firedAt','FiredAt')||''}</span>
+        </div>
+        <div class="alert-prices">
+          <div class="ap">Entry <strong>${fmt(v(a,'entry','Entry'))}</strong></div>
+          <div class="ap" style="color:var(--green)">Target <strong>${fmt(v(a,'target','Target'))}</strong></div>
+          <div class="ap" style="color:var(--red)">SL <strong>${fmt(v(a,'stopLoss','StopLoss'))}</strong></div>
+          <div class="ap">R:R <strong>${v(a,'riskReward','RiskReward')||'—'}</strong></div>
+        </div>
+      </div>`).join('');
+  }catch(e){}
 }
 
 // ── Screener ──────────────────────────────────────────
-async function loadScreener() {
-  try {
-    const data = await fetch(BASE + '/api/market/websocket').then(r => r.json());
-    const summary = data.screenerSummary || data.ScreenerSummary || {};
-    document.getElementById('screenerSummary').innerHTML =
-      `<strong style="color:var(--teal2)">${summary.totalAffordable || 0}</strong> affordable stocks ` +
-      `(₹${summary.minPrice || 15}–₹${summary.maxAffordablePrice || '—'}) | ` +
-      `<strong>${summary.tier1ForAnalysis || 0}</strong> in Tier 1 (deep analysis) | ` +
-      `<strong>${summary.tier2WatchOnly || 0}</strong> watch only`;
-    renderScreener(summary.topCandidates || summary.TopCandidates || []);
-  } catch(e) {
-    document.getElementById('screenerSummary').textContent = 'Error: ' + e.message;
-  }
-}
-
-function renderScreener(stocks) {
-  if (!stocks || !stocks.length) {
-    document.getElementById('screenerTable').innerHTML =
-      '<tr><td colspan="6" class="empty">No screener data yet — waits for market open</td></tr>';
-    return;
-  }
-  document.getElementById('screenerTable').innerHTML = stocks.map(s => {
-    const sym  = s.symbol  || s.Symbol  || '—';
-    const ltp  = s.price   || s.Price   || s.lTP || s.LTP || 0;
-    const chg  = s.changePercent || s.ChangePercent || 0;
-    const vol  = s.volume  || s.Volume  || 0;
-    const mom  = s.momentumScore || s.MomentumScore || 0;
-    const tier = s.tier    || s.Tier    || 2;
-    const cc   = chg >= 0 ? 'pos' : 'neg';
-    return `<tr>
-      <td><strong>${sym}</strong></td>
-      <td>₹${ltp.toFixed(2)}</td>
-      <td class="${cc}">${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%</td>
-      <td>${(vol / 100000).toFixed(1)}L</td>
-      <td><div style="background:rgba(13,148,136,${mom/100});width:${mom}%;max-width:60px;height:4px;border-radius:2px;display:inline-block"></div> ${Math.round(mom)}</td>
-      <td><span class="chip ${tier===1 ? 'chip-teal' : 'chip-muted'}">T${tier}</span></td>
-    </tr>`;
-  }).join('');
+async function loadScreener(){
+  try{
+    const d=await fetch(BASE+'/api/market/websocket').then(r=>r.json());
+    const sm=v(d,'screenerSummary','ScreenerSummary')||{};
+    document.getElementById('scrSum').innerHTML=
+      `<strong style="color:var(--teal2)">${sm.totalAffordable||0}</strong> affordable · ` +
+      `<strong>${sm.tier1ForAnalysis||0}</strong> Tier 1 · max ₹${sm.maxAffordablePrice||'—'}`;
+    const cands=v(sm,'topCandidates','TopCandidates')||[];
+    if(!cands.length){document.getElementById('scrTbl').innerHTML='<tr><td colspan="6" class="empty">No screener data — starts after 9:15 AM</td></tr>';return;}
+    document.getElementById('scrTbl').innerHTML=cands.map(s=>{
+      const ltp=v(s,'price','Price','lTP','LTP')||0;
+      const chg=v(s,'changePercent','ChangePercent')||0;
+      const vol=v(s,'volume','Volume')||0;
+      const mom=v(s,'momentumScore','MomentumScore')||0;
+      const tier=v(s,'tier','Tier')||2;
+      return `<tr><td><strong>${v(s,'symbol','Symbol')}</strong></td>
+        <td>${ltp>0?'₹'+ltp.toFixed(2):'—'}</td>
+        <td class="${chg>=0?'pos':'neg'}">${chg>=0?'+':''}${chg.toFixed(2)}%</td>
+        <td>${(vol/100000).toFixed(1)}L</td>
+        <td>${Math.round(mom)}</td>
+        <td><span class="chip ${tier===1?'chip-g':'chip-m'}">T${tier}</span></td></tr>`;
+    }).join('');
+  }catch(e){document.getElementById('scrSum').textContent='Error: '+e.message;}
 }
 
 // ── News ──────────────────────────────────────────────
-async function loadNews() {
-  try {
-    const data = await fetch(BASE + '/api/news').then(r => r.json());
-    renderNews(data);
-  } catch(e) {}
-}
-
-function renderNews(items) {
-  if (!items || !items.length) {
-    document.getElementById('newsList').innerHTML = '<div class="empty">No news loaded yet.</div>';
-    return;
-  }
-  document.getElementById('newsList').innerHTML = items.slice(0, 40).map(n => {
-    const headline = n.headline || n.Headline || '—';
-    const source   = n.source   || n.Source   || '';
-    const label    = (n.sentimentLabel || n.SentimentLabel || 'neutral').toLowerCase();
-    const symbol   = n.symbol   || n.Symbol   || '';
-    const time     = n.publishedAt || n.PublishedAt || '';
-    return `
-    <div class="news-item">
-      <span class="news-sentiment ${label}">${label}</span>
-      <div>
-        <div class="news-headline">${headline}</div>
-        <div class="news-meta">${source}${symbol ? ' · ' + symbol : ''}${time ? ' · ' + new Date(time).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'}) : ''}</div>
-      </div>
-    </div>`;
-  }).join('');
+async function loadNews(){
+  try{
+    const items=await fetch(BASE+'/api/news').then(r=>r.json());
+    if(!items||!items.length){document.getElementById('newsDiv').innerHTML='<div class="empty">No news</div>';return;}
+    document.getElementById('newsDiv').innerHTML=items.slice(0,40).map(n=>{
+      const lbl=(v(n,'sentimentLabel','SentimentLabel')||'neutral').toLowerCase();
+      return `<div class="news-item">
+        <span class="ns ${lbl}">${lbl}</span>
+        <div>
+          <div>${v(n,'headline','Headline')||''}</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:2px">${v(n,'source','Source')||''}</div>
+        </div>
+      </div>`;
+    }).join('');
+  }catch(e){}
 }
 
 // ── Accuracy ──────────────────────────────────────────
-async function loadAccuracy() {
-  try {
-    const [acc, rej] = await Promise.all([
-      fetch(BASE + '/api/accuracy').then(r => r.json()),
-      fetch(BASE + '/api/accuracy/rejections').then(r => r.json()).catch(() => null),
+async function loadAcc(){
+  try{
+    const [acc,rej]=await Promise.all([
+      fetch(BASE+'/api/accuracy').then(r=>r.json()),
+      fetch(BASE+'/api/accuracy/rejections').then(r=>r.json()).catch(()=>null),
     ]);
+    const tot=acc.totalSignals||0;
+    const wr =acc.winRate||0;
+    const exp=acc.expectancy||0;
+    const gr =acc.grade||'—';
+    const aw =acc.avgWinPercent||0;
+    const al =acc.avgLossPercent||0;
+    const ww =rej?.wouldHaveWonPercent||rej?.WouldHaveWonPercent||0;
+    const gc =gr.includes('A')?'var(--green)':gr.includes('B')?'var(--teal2)':gr.includes('C')?'var(--amber)':'var(--red)';
 
-    const total  = acc.totalSignals     || 0;
-    const wins   = acc.hitTarget        || 0;
-    const losses = acc.hitStopLoss      || 0;
-    const wr     = acc.winRate          || 0;
-    const exp    = acc.expectancy       || 0;
-    const grade  = acc.grade            || '—';
-    const avgWin = acc.avgWinPercent    || 0;
-    const avgLoss= acc.avgLossPercent   || 0;
-
-    // Split BUY vs AVOID if available
-    const buyTotal  = acc.buySignals   || acc.BuySignals   || total;
-    const avoidTotal= acc.avoidSignals || acc.AvoidSignals || 0;
-    const avoidWouldWin = (rej && rej.wouldHaveWonPercent) || 0;
-
-    const gradeColor = grade.includes('A') ? 'var(--green)' : grade.includes('B') ? 'var(--teal2)' : grade.includes('C') ? 'var(--amber)' : 'var(--red)';
-
-    document.getElementById('accuracyStats').innerHTML = `
+    document.getElementById('accDiv').innerHTML=`
     <div class="stat-grid">
-      <div class="stat-box">
-        <div class="stat-val" style="color:var(--text)">${total}</div>
-        <div class="stat-label">Total signals logged</div>
-      </div>
-      <div class="stat-box">
-        <div class="stat-val" style="color:var(--green)">${buyTotal}</div>
-        <div class="stat-label">BUY signals</div>
-      </div>
-      <div class="stat-box">
-        <div class="stat-val" style="color:var(--amber)">${avoidTotal}</div>
-        <div class="stat-label">AVOID signals</div>
-      </div>
-      <div class="stat-box">
-        <div class="stat-val" style="color:${wr >= 50 ? 'var(--green)' : 'var(--red)'}">${wr.toFixed(1)}%</div>
-        <div class="stat-label">Win rate (BUY)</div>
-      </div>
-      <div class="stat-box">
-        <div class="stat-val" style="color:${exp > 0 ? 'var(--green)' : 'var(--red)'}">${exp > 0 ? '+' : ''}${exp.toFixed(2)}%</div>
-        <div class="stat-label">Expectancy</div>
-      </div>
-      <div class="stat-box">
-        <div class="stat-val" style="color:${gradeColor}">${grade}</div>
-        <div class="stat-label">Grade</div>
-      </div>
-      <div class="stat-box">
-        <div class="stat-val" style="color:var(--green)">+${avgWin.toFixed(2)}%</div>
-        <div class="stat-label">Avg win</div>
-      </div>
-      <div class="stat-box">
-        <div class="stat-val" style="color:var(--red)">-${Math.abs(avgLoss).toFixed(2)}%</div>
-        <div class="stat-label">Avg loss</div>
-      </div>
+      <div class="stat"><div class="stat-val">${tot}</div><div class="stat-lbl">Total signals</div></div>
+      <div class="stat"><div class="stat-val" style="color:${wr>=50?'var(--green)':'var(--red)'}">
+        ${wr.toFixed(1)}%</div><div class="stat-lbl">Win rate</div></div>
+      <div class="stat"><div class="stat-val" style="color:${exp>0?'var(--green)':'var(--red)'}">
+        ${exp>0?'+':''}${exp.toFixed(2)}%</div><div class="stat-lbl">Expectancy</div></div>
+      <div class="stat"><div class="stat-val" style="color:${gc}">${gr}</div><div class="stat-lbl">Grade</div></div>
+      <div class="stat"><div class="stat-val" style="color:var(--green)">+${aw.toFixed(2)}%</div><div class="stat-lbl">Avg win</div></div>
+      <div class="stat"><div class="stat-val" style="color:var(--red)">-${Math.abs(al).toFixed(2)}%</div><div class="stat-lbl">Avg loss</div></div>
     </div>
-
-    ${avoidTotal > 0 ? `
-    <div class="card">
-      <div class="card-title">🔍 AVOID Signals — Would they have worked?</div>
+    ${ww>0?`<div class="card">
+      <div class="card-title">🔍 AVOID Signal Analysis</div>
       <p style="font-size:12px;color:var(--muted);margin-bottom:12px">
-        AVOID signals now have real entry/target/SL logged. Outcomes fill 2 hours after signal.
+        AVOID signals now log entry/target/SL. Outcomes auto-filled 2hrs after signal.
       </p>
-      <div style="display:flex;gap:12px;flex-wrap:wrap">
-        <div class="stat-box" style="min-width:140px">
-          <div class="stat-val" style="color:var(--amber)">${avoidTotal}</div>
-          <div class="stat-label">AVOID signals logged</div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <div class="stat" style="min-width:140px">
+          <div class="stat-val" style="color:var(--amber)">${ww.toFixed(1)}%</div>
+          <div class="stat-lbl">Would have won</div>
         </div>
-        <div class="stat-box" style="min-width:140px">
-          <div class="stat-val" style="color:${avoidWouldWin > 60 ? 'var(--red)' : 'var(--green)'}">
-            ${avoidWouldWin.toFixed(1)}%
-          </div>
-          <div class="stat-label">Would have won</div>
-        </div>
-        <div class="stat-box" style="min-width:200px;text-align:left;padding-left:16px">
-          <div style="font-size:12px;color:var(--muted);margin-bottom:4px">Recommendation:</div>
-          <div style="font-size:13px;color:${avoidWouldWin > 60 ? 'var(--amber)' : 'var(--green)'}">
-            ${avoidWouldWin > 60
-              ? '⚠️ AVOID gates too strict — consider loosening at ₹5,000'
-              : '✅ AVOID was correct — gates protecting capital well'}
+        <div class="stat" style="min-width:200px;text-align:left;padding-left:14px">
+          <div style="font-size:13px;color:${ww>60?'var(--amber)':'var(--green)'}">
+            ${ww>60?'⚠️ Gates too strict — loosen at ₹5,000':'✅ AVOID was correct — capital protected'}
           </div>
         </div>
       </div>
-      ${rej && rej.topRejectionReason ? `
-      <div style="margin-top:12px;font-size:12px;color:var(--muted)">
-        Top rejection reason: <strong style="color:var(--amber)">${rej.topRejectionReason}</strong>
-      </div>` : ''}
-    </div>` : `
+    </div>`:''}
     <div class="card">
-      <div class="card-title">🔍 AVOID Signals — Accuracy tracking enabled</div>
-      <p style="font-size:12px;color:var(--muted)">
-        AVOID signals now have real entry/target/SL logged. After 2+ weeks you'll see whether
-        AVOID decisions were correct. Visit <code>/api/accuracy/rejections</code> for details.
-      </p>
-    </div>`}
-
-    <div class="card">
-      <div class="card-title">📊 How to read these numbers</div>
+      <div class="card-title">How to read</div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:12px">
-        <div><strong style="color:var(--teal2)">Expectancy &gt; 0</strong> — system has a mathematical edge. Scale capital.</div>
-        <div><strong style="color:var(--amber)">AVOID would-have-won &gt; 60%</strong> — gates too strict, loosen at ₹5,000.</div>
-        <div><strong style="color:var(--green)">Win rate &gt; 50%</strong> — more wins than losses. With R:R 1:2, 45% is profitable.</div>
-        <div><strong style="color:var(--muted)">Need 2 weeks minimum</strong> — 20+ signals for statistically meaningful data.</div>
+        <div><strong style="color:var(--teal2)">Expectancy &gt; 0</strong> — system has edge. Scale capital.</div>
+        <div><strong style="color:var(--amber)">AVOID won &gt; 60%</strong> — loosen a gate at ₹5,000.</div>
+        <div><strong style="color:var(--green)">Win rate &gt; 50%</strong> — more wins. 45% is profitable with R:R 1:2.</div>
+        <div><strong style="color:var(--muted)">Need 2 weeks</strong> — 20+ signals for meaningful stats.</div>
       </div>
     </div>`;
-  } catch(e) {
-    document.getElementById('accuracyStats').innerHTML =
-      '<div class="empty">⚠️ Could not load accuracy data: ' + e.message + '</div>';
+  }catch(e){
+    document.getElementById('accDiv').innerHTML='<div class="empty">⚠️ '+e.message+'</div>';
   }
 }
 
-// ── Auto-refresh every 30s always ────────────────────
-setInterval(loadDashboard, 30000);
-
-// ── Force trigger a signal scan ──────────────────────
-async function forceRefresh() {
-  const btn = document.getElementById('forceRefreshBtn');
-  if (btn) { btn.textContent = '⏳ Scanning…'; btn.disabled = true; }
-  try {
-    // Hit the force-refresh endpoint
-    await fetch(BASE + '/api/recommendations/refresh', { method: 'POST' })
-      .catch(() => {});
-    // Wait 3s for scan to complete then reload
-    await new Promise(r => setTimeout(r, 3000));
-    await loadDashboard();
-  } finally {
-    if (btn) { btn.textContent = '⚡ Force Scan Now'; btn.disabled = false; }
-  }
-}
+// ── Init ──────────────────────────────────────────────
+setStatus(false,'Loading…');
+loadDash();
+loadMarketCtx();
+setInterval(loadDash, 30000);
+setInterval(loadMarketCtx, 60000);
 </script>
 </body>
 </html>
