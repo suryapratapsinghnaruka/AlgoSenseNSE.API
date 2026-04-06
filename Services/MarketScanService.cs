@@ -194,16 +194,40 @@ namespace AlgoSenseNSE.API.Services
         // ── 5-min candle technical refresh ───────────
         public async Task RefreshIntradaySignalsAsync(List<string> symbols)
         {
-            // Dynamic: refresh symbol list from screener every cycle
-            // This means as volumes and prices change intraday,
-            // new affordable stocks automatically enter analysis
             var screenerTier1 = _screener.GetTier1Symbols(50);
             var effectiveSymbols = screenerTier1.Any()
                 ? screenerTier1
                     .Where(s => _symbolTokenMap.ContainsKey(s))
                     .Take(30)
                     .ToList()
-                : symbols; // fallback to passed-in list
+                : symbols;
+
+            // ── MiroFish: Pre-scan crowd behavior detection ──
+            // Identify stocks moving AGAINST the market trend (defensive plays)
+            // These are the best opportunities in PANIC/bearish days
+            var allPrices = _livePrices.Values.ToList();
+            if (allPrices.Count > 10)
+            {
+                double avgChange = allPrices
+                    .Where(p => p.ChangePercent != 0)
+                    .Average(p => p.ChangePercent);
+                var crowdOutliers = allPrices
+                    .Where(p => p.ChangePercent > avgChange + 0.5) // beating the market
+                    .Select(p => p.Symbol)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+                // Boost priority for market-beating stocks — add them to front of list
+                var boosted = effectiveSymbols
+                    .OrderByDescending(s => crowdOutliers.Contains(s) ? 1 : 0)
+                    .ToList();
+
+                if (crowdOutliers.Count > 0)
+                    _logger.LogInformation(
+                        "🐟 MiroFish crowd outliers (beating market): {syms}",
+                        string.Join(",", crowdOutliers.Take(5)));
+
+                effectiveSymbols = boosted;
+            }
 
             _logger.LogInformation(
                 "📈 Refreshing 5-min signals for {n} stocks...",
@@ -297,28 +321,95 @@ namespace AlgoSenseNSE.API.Services
         {
             try
             {
+                // ── MiroFish-inspired crowd behavior filter ────────────
+                // Before ranking, detect sector clustering (PSU banks dominating every day).
+                // Apply peer-group volume surge bonus: if multiple stocks in same sector
+                // are surging together = institutional rotation = stronger signal.
+                // Then enforce sector diversity: max 2 per sector in top 10.
+
+                var sectorMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    {"CANBK","PSUBank"},{"UNIONBANK","PSUBank"},{"MAHABANK","PSUBank"},
+                    {"CENTRALBK","PSUBank"},{"BANKBARODA","PSUBank"},{"IOB","PSUBank"},
+                    {"PNB","PSUBank"},{"INDIANB","PSUBank"},{"SBIN","PSUBank"},
+                    {"INFY","IT"},{"TCS","IT"},{"WIPRO","IT"},{"HCLTECH","IT"},{"TECHM","IT"},
+                    {"ONGC","Energy"},{"BPCL","Energy"},{"IOC","Energy"},{"GAIL","Energy"},
+                    {"COALINDIA","Energy"},{"NTPC","Energy"},
+                    {"TATASTEEL","Metals"},{"HINDALCO","Metals"},{"NMDC","Metals"},
+                    {"NATIONALUM","Metals"},{"JSWSTEEL","Metals"},
+                    {"SUNPHARMA","Pharma"},{"CIPLA","Pharma"},{"DRREDDY","Pharma"},
+                    {"RECLTD","Finance"},{"PFC","Finance"},{"IRFC","Finance"},
+                    {"SUZLON","Renewables"},{"IREDA","Renewables"},{"NHPC","Power"},
+                };
+
+                // Count sector volume surge (MiroFish crowd detection)
+                var sectorVolumeSurge = new Dictionary<string, int>();
+                foreach (var kv in _techResults)
+                {
+                    var sector = sectorMap.GetValueOrDefault(kv.Key, "Other");
+                    var lp = _livePrices.GetValueOrDefault(kv.Key);
+                    if (kv.Value.SupertrendBullish && lp?.LTP > 0)
+                    {
+                        sectorVolumeSurge.TryGetValue(sector, out int cnt);
+                        sectorVolumeSurge[sector] = cnt + 1;
+                    }
+                }
+
                 var ranked = _scores
                     .Where(s => s.Value.FinalScore > 0)
                     .Select(s =>
                     {
-                        var tech = _techResults.GetValueOrDefault(s.Key);
-                        var lp   = _livePrices.GetValueOrDefault(s.Key);
+                        var tech   = _techResults.GetValueOrDefault(s.Key);
+                        var lp     = _livePrices.GetValueOrDefault(s.Key);
+                        var sector = sectorMap.GetValueOrDefault(s.Key, "Other");
+
                         double bonus = 0;
                         if (tech?.SupertrendBullish == true) bonus += 5;
                         if (tech != null && lp != null &&
                             lp.LTP > tech.VWAP && tech.VWAP > 0) bonus += 5;
                         if (tech?.ADX > 25) bonus += 3;
+                        if (tech?.ADX > 40) bonus += 3; // very strong trend bonus
+
+                        // MiroFish: sector rotation bonus — if 3+ stocks in sector surging
+                        // = institutional crowd behavior = add bonus to ALL stocks in sector
+                        if (sectorVolumeSurge.GetValueOrDefault(sector, 0) >= 3) bonus += 4;
+
+                        // Sector diversity penalty: penalise PSU banks if already 2 in list
+                        // (handled below during selection, not here)
+
                         return (Symbol: s.Key, Score: s.Value,
-                            AdjScore: s.Value.FinalScore + bonus);
+                            AdjScore: s.Value.FinalScore + bonus,
+                            Sector: sector);
                     })
                     .OrderByDescending(x => x.AdjScore)
-                    .Take(10)
+                    .Take(30) // take 30 before diversity filter
                     .ToList();
+
+                // Apply sector diversity: max 2 per sector in final top 10
+                var sectorCount = new Dictionary<string, int>();
+                var diverseRanked = new List<(string Symbol, CompositeScore Score, double AdjScore, string Sector)>();
+                foreach (var item in ranked)
+                {
+                    sectorCount.TryGetValue(item.Sector, out int sc);
+                    int maxPerSector = item.Sector == "PSUBank" ? 2 : 3; // stricter for PSU banks
+                    if (sc < maxPerSector)
+                    {
+                        diverseRanked.Add(item);
+                        sectorCount[item.Sector] = sc + 1;
+                        if (diverseRanked.Count >= 10) break;
+                    }
+                }
+
+                _logger.LogInformation(
+                    "📊 Sector diversity applied: {sectors}",
+                    string.Join(", ", sectorCount.Select(kv => $"{kv.Key}:{kv.Value}")));
+
+                var finalRanked = diverseRanked.Take(10).ToList();
 
                 var recs = new List<Recommendation>();
                 int rank = 1;
 
-                foreach (var item in ranked.Take(5))
+                foreach (var item in finalRanked.Take(5))
                 {
                     var sym   = item.Symbol;
                     var score = item.Score;
