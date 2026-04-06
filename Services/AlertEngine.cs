@@ -165,14 +165,25 @@ namespace AlgoSenseNSE.API.Services
             // ── Quality thresholds ────────────────────
             int    minConfidence = _config.GetValue<int>(
                 "Trading:MinConfidence", 70);
-            double minScore = 68.0;
+            double minScore = 65.0; // lowered from 68 — RuleEngine already did heavy filtering
 
             // ── Adjust thresholds by regime ───────────
-            // In Range regime, require higher confidence
             if (currentRegime == "RANGE")
             {
                 minConfidence = 75;
-                minScore      = 72.0;
+                minScore      = 70.0;
+            }
+            // High-VIX mode: accept lower confidence since adaptive VIX already
+            // reduced score by 5-8pts — don't double-penalise strong signals
+            var nseCtx = recommendations.FirstOrDefault()?.AiAnalysis;
+            bool highVixMode = recommendations.Any(r =>
+                r.Technical?.Score >= 85 && r.Score?.FinalScore >= 75);
+            if (highVixMode && currentRegime != "PANIC")
+            {
+                minConfidence = Math.Max(62, minConfidence - 5);
+                _logger.LogInformation(
+                    "📊 High-VIX mode: confidence threshold reduced to {min}%",
+                    minConfidence);
             }
 
             // ── Process each recommendation ───────────
