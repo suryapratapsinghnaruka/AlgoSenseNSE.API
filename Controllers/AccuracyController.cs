@@ -65,19 +65,22 @@ namespace AlgoSenseNSE.API.Controllers
                 period        = $"Last {days} days",
                 generatedAt   = DateTime.Now,
 
-                // Total signals logged (BUY + AVOID)
+                // Total signals logged
                 totalSignals  = stats.TotalSignals,
                 buySignals    = stats.BuySignals,
                 avoidSignals  = stats.AvoidSignals,
+                outcomeFilled = stats.HitTarget + stats.HitSl + stats.Expired,
+                pendingOutcomes = stats.TotalSignals - (stats.HitTarget + stats.HitSl + stats.Expired),
 
-                // BUY outcomes
+                // Outcomes
                 hitTarget     = stats.HitTarget,
                 hitSl         = stats.HitSl,
                 expired       = stats.Expired,
 
-                // Win rates (on BUY signals only)
+                // Win rate calculated on filled outcomes only
                 winRate       = Math.Round(winRate  * 100, 1),
                 lossRate      = Math.Round(lossRate * 100, 1),
+                expiredRate   = Math.Round(expiredRate * 100, 1),
 
                 // P&L
                 avgWinPercent  = Math.Round(stats.AvgProfitPct, 2),
