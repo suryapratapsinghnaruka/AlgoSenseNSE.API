@@ -33,13 +33,15 @@ namespace AlgoSenseNSE.API.Controllers
         {
             var stats = await _signals.GetAccuracyStatsAsync(days);
 
-            // Expectancy = (WinRate × AvgWin) - (LossRate × AvgLoss)
-            double winRate  = stats.TotalSignals > 0
-                ? (double)stats.HitTarget / stats.TotalSignals : 0;
-            double lossRate = 1 - winRate;
-            double expectancy = stats.TotalSignals > 0
-                ? (winRate  * Math.Abs(stats.AvgProfitPct))
-                - (lossRate * Math.Abs(stats.AvgLossPct))
+            // Win rate based on filled outcomes only (not total signals)
+            int outcomeFilled = stats.HitTarget + stats.HitSl + stats.Expired;
+            double winRate      = outcomeFilled > 0 ? (double)stats.HitTarget / outcomeFilled : 0;
+            double lossRate     = outcomeFilled > 0 ? (double)stats.HitSl     / outcomeFilled : 0;
+            double expiredRate  = outcomeFilled > 0 ? (double)stats.Expired   / outcomeFilled : 0;
+            double expectancy   = outcomeFilled > 0
+                ? (winRate     * Math.Abs(stats.AvgProfitPct))
+                - (lossRate    * Math.Abs(stats.AvgLossPct))
+                - (expiredRate * 0.1)
                 : 0;
 
             // Grade the system
