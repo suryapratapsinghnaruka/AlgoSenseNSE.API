@@ -350,14 +350,32 @@ Respond ONLY in this JSON (no markdown, no preamble):
             CompositeScore    score,
             MarketContext     mkt)
         {
-            if (mkt.IndiaVix > 22)
-                return Avoid($"VIX={mkt.IndiaVix:F1} > 22 — high fear");
+            // ── Adaptive VIX gate ─────────────────────────────────
+            // Old: VIX > 22 = hard block ALL stocks
+            // New: VIX threshold scales with stock quality + trend strength
+            // Data shows PSU banks + metal stocks profit at VIX 24-27
+            // Only hard block when VIX > 28 (extreme panic) or VIX > 25 + bad quality
+            double vixLimit = 27.0; // raised from 22 to 27
+            if (score.FinalScore >= 80 && tech.ADX >= 35 && tech.SupertrendBullish)
+                vixLimit = 28.5; // very strong signal = allow higher VIX
+            else if (score.FinalScore >= 70)
+                vixLimit = 27.0; // good signal = allow up to 27
+            else
+                vixLimit = 25.0; // weak signal = still restrict at 25
 
-            if (mkt.MarketQualityScore < 40)
-                return Avoid($"Market quality {mkt.MarketQualityScore}/100 — poor conditions");
+            if (mkt.IndiaVix > vixLimit)
+                return Avoid($"VIX={mkt.IndiaVix:F1} > {vixLimit:F0} — fear too high for this signal quality");
 
-            if (mkt.NiftyChange < -1.0)
-                return Avoid($"Nifty down {mkt.NiftyChange:F1}% — broad market weak");
+            // Quality gate: scale with VIX
+            int mqMin = mkt.IndiaVix > 25 ? 20 : mkt.IndiaVix > 22 ? 30 : 40;
+            if (mkt.MarketQualityScore < mqMin)
+                return Avoid($"Market quality {mkt.MarketQualityScore}/100 < {mqMin} — poor conditions");
+
+            // Nifty gate: only block if falling hard AND VIX > 25
+            if (mkt.NiftyChange < -1.5)
+                return Avoid($"Nifty down {mkt.NiftyChange:F1}% — broad market too weak");
+            if (mkt.NiftyChange < -1.0 && mkt.IndiaVix > 25)
+                return Avoid($"Nifty {mkt.NiftyChange:F1}% + VIX {mkt.IndiaVix:F1} — risky combination");
 
             if (!tech.SupertrendBullish)
                 return Avoid("Supertrend = SELL — downtrend active");
@@ -441,13 +459,22 @@ Respond ONLY in this JSON (no markdown, no preamble):
             int conf = 65;
             if (tech.RSI    >= 55 && tech.RSI    <= 68) conf += 5;
             if (tech.ADX    >  30)                      conf += 5;
+            if (tech.ADX    >  40)                      conf += 3;  // extra for very strong trend
             if (tech.Score  >  75)                      conf += 5;
+            if (tech.Score  >  85)                      conf += 3;  // extra for exceptional tech
             if (fund.Score  >  80)                      conf += 5;
-            if (mkt.IndiaVix < 16)                      conf += 5;
-            if (mkt.FiiNetCrore > 500)                  conf += 5;
-            if (mkt.MarketQualityScore > 65)            conf += 5;
-            if (score.FinalScore > 75)                  conf += 3;
-            return Math.Min(conf, 92);
+            // VIX-scaled confidence — not zero at VIX 22-27, just less
+            if      (mkt.IndiaVix < 16)  conf += 8;
+            else if (mkt.IndiaVix < 20)  conf += 5;
+            else if (mkt.IndiaVix < 25)  conf += 2;
+            if      (mkt.IndiaVix > 25)  conf -= 5;  // penalty for high fear
+            if      (mkt.IndiaVix > 27)  conf -= 8;  // bigger penalty for panic
+            if (mkt.FiiNetCrore > 500)              conf += 5;
+            if (mkt.MarketQualityScore > 65)        conf += 5;
+            else if (mkt.MarketQualityScore > 40)   conf += 2;
+            if (score.FinalScore > 75)              conf += 3;
+            if (score.FinalScore > 85)              conf += 3;
+            return Math.Min(Math.Max(conf, 55), 92);
         }
 
         private static string BuildBuyReason(
@@ -476,4 +503,3 @@ Respond ONLY in this JSON (no markdown, no preamble):
         public string BlockReason    { get; set; } = "";
     }
 }
-
