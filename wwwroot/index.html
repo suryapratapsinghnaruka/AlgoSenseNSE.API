@@ -399,17 +399,44 @@ function renderSignals(recs){
     const ist=new Date(new Date().toLocaleString('en-US',{timeZone:'Asia/Kolkata'}));
     const h=ist.getHours(),m2=ist.getMinutes();
     const open=(h>9||(h===9&&m2>=20))&&(h<15||(h===15&&m2<=30));
-    document.getElementById('sigGrid').innerHTML=open
-      ?`<div class="empty">
-          <div style="font-size:32px;margin-bottom:12px">⏳</div>
-          <div style="font-weight:600;margin-bottom:6px">Market open — signals loading</div>
-          <div style="font-size:12px;color:var(--muted);margin-bottom:16px">
-            Prices load ~5 min after startup. ${_dir!=='all'?'Or try showing All signals.':'Click Force Scan to trigger immediately.'}
-          </div>
-          <button onclick="forceScan()" class="btn btnt">⚡ Force Scan Now</button>
-        </div>`
-      :`<div class="empty"><div style="font-size:32px;margin-bottom:8px">🌙</div>
-          Market closed — signals fire 9:20 AM–3:10 PM IST</div>`;
+    const vixVal = +(mktFull.indiaVix||mktFull.IndiaVix||mkt.indiaVix||mkt.IndiaVix||0);
+    const mqVal  = +(mktFull.marketQualityScore||mktFull.MarketQualityScore||0);
+    const isPanic = vixVal > 25 || mqVal < 30;
+    let emptyHTML='';
+    if(!open){
+      emptyHTML=`<div class="empty"><div style="font-size:32px;margin-bottom:8px">🌙</div>Market closed — signals fire 9:20 AM–3:10 PM IST</div>`;
+    } else if(isPanic){
+      emptyHTML=`<div class="empty" style="max-width:500px;margin:0 auto;text-align:center">
+        <div style="font-size:36px;margin-bottom:12px">🛡️</div>
+        <div style="font-weight:600;font-size:15px;color:#ef4444;margin-bottom:8px">PANIC Mode — Capital Protection Active</div>
+        <div style="font-size:13px;color:var(--muted);line-height:1.8;margin-bottom:16px">
+          VIX = <strong style="color:#f59e0b">${vixVal.toFixed(1)}</strong> &nbsp;|&nbsp;
+          Market Quality = <strong style="color:#f59e0b">${mqVal}/100</strong><br>
+          All BUY signals are blocked — this is <strong>correct behavior</strong>, not a bug.<br>
+          Your capital is protected from high-fear conditions.<br>
+          <span style="color:#6b7280;font-size:12px">AVOID signals are still recorded for accuracy tracking.</span>
+        </div>
+        <div style="display:flex;gap:10px;justify-content:center">
+          <button onclick="forceScan()" class="btn btnt" style="padding:8px 20px">⚡ Force Scan</button>
+          <button onclick="setDir('avoid')" class="btn" style="padding:8px 20px">👁 View AVOID signals</button>
+        </div>
+      </div>`;
+    } else if(_dir!=='all'){
+      emptyHTML=`<div class="empty">
+        <div style="font-size:28px;margin-bottom:10px">🔍</div>
+        No ${_dir.toUpperCase()} signals right now.<br>
+        <button onclick="setDir('all')" class="btn btnt" style="margin-top:12px;padding:6px 16px">Show All Signals</button>
+      </div>`;
+    } else {
+      emptyHTML=`<div class="empty">
+        <div style="font-size:32px;margin-bottom:12px">⏳</div>
+        <div style="font-weight:600;margin-bottom:6px">Signals loading...</div>
+        <div style="font-size:12px;color:var(--muted);margin-bottom:16px">Takes ~5 min after startup.</div>
+        <button onclick="forceScan()" class="btn btnt">⚡ Force Scan Now</button>
+      </div>`;
+    }
+    document.getElementById('sigGrid').innerHTML=emptyHTML;
+    if(open && recs.length===0) setTimeout(()=>loadDash(),15000);
     return;
   }
 
