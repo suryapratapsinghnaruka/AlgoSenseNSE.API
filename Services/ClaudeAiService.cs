@@ -503,3 +503,4 @@ Respond ONLY in this JSON (no markdown, no preamble):
         public string BlockReason    { get; set; } = "";
     }
 }
+
