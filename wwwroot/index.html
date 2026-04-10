@@ -519,8 +519,8 @@ function renderSignals(recs){
   <div class="shdr">
     <div>
       <div class="ssym">${sym}</div>
-      <div class="sprice">
-        ${ltp>0?'₹'+ltp.toFixed(2):'<span style="color:var(--amber)">Price loading…</span>'}
+      <div class="sprice" id="price-${sym}" data-sym="${sym}">
+        ${ltp>0?`<span class="live-ltp">₹${ltp.toFixed(2)}</span>`:'<span style="color:var(--amber)">Price loading…</span>'}
         ${ltp>0&&chg!==0?`<span class="${chg>=0?'pos':'neg'}" style="margin-left:6px">${chg>=0?'+':''}${chg.toFixed(2)}%</span>`:''}
         ${vol>0?`<span style="font-size:10px;color:var(--muted);margin-left:6px">${(vol/100000).toFixed(1)}L vol</span>`:''}
       </div>
@@ -579,7 +579,21 @@ function renderSignals(recs){
 
   <div class="smeta">
     <div class="mi">R:R <span class="rr ${rrCls}">${rr}</span></div>
-    ${expP&&!isAvoid?`<div class="mi"><span>${expP}</span></div>`:''}
+    ${(isBuy||isShort)&&entry>0?(()=>{
+      // Compute qty and cost client-side so it's always correct even if server had ₹?
+      const cap=1500, tradeable=cap*0.6;
+      const atrPct=(atr>0&&entry>0)?atr/entry*100:2;
+      const mult=atrPct<1?1.2:atrPct<2?1.0:atrPct<3?0.85:0.70;
+      const slipE=entry<100?0.002:entry<300?0.001:0.0005;
+      const adjEntry=+(entry*(1+slipE)).toFixed(2);
+      const riskPerShare=adjEntry-(sl>0?sl:adjEntry*0.99);
+      const maxRisk=cap*0.15;
+      const qtyByRisk=riskPerShare>0?Math.floor(maxRisk*mult/riskPerShare):0;
+      const qtyByCap=Math.floor(tradeable/adjEntry);
+      const qty2=Math.max(1,Math.min(qtyByRisk,qtyByCap));
+      const cost=+(qty2*adjEntry).toFixed(0);
+      return `<div class="mi">₹${cost.toLocaleString('en-IN')} on ${qty2} share${qty2!==1?'s':''}</div>`;
+    })():''}
     ${th&&!isAvoid?`<div class="mi"><span>${th}</span></div>`:''}
   </div>
 
@@ -828,9 +842,59 @@ async function loadAcc(){
   }catch(e){document.getElementById('accDiv').innerHTML='<div class="empty">⚠️ '+e.message+'</div>';}
 }
 
+// ── Live price ticker (every 3 seconds) ───────────────
+// Polls /api/recommendations for fresh prices only — doesn't rebuild cards
+// This keeps displayed prices current between 30s full refreshes
+let _liveTickRunning = false;
+async function livePriceTick(){
+  if(_liveTickRunning) return;
+  _liveTickRunning = true;
+  try{
+    const priceEls = document.querySelectorAll('[data-sym]');
+    if(!priceEls.length){ _liveTickRunning=false; return; }
+    
+    const data = await fetch(BASE+'/api/recommendations').then(r=>r.json()).catch(()=>null);
+    if(!data){ _liveTickRunning=false; return; }
+    
+    const recs = g(data,'recommendations','Recommendations')||[];
+    // Build a price map from fresh data
+    const priceMap = {};
+    recs.forEach(rec=>{
+      const stk = g(rec,'stock','Stock')||{};
+      const sym = g(stk,'symbol','Symbol')||'';
+      const ltp = g(stk,'lastPrice','LastPrice')||0;
+      const chg = g(stk,'changePercent','ChangePercent')||0;
+      if(sym && ltp>0) priceMap[sym] = {ltp, chg};
+    });
+    
+    // Update only price elements that have changed
+    priceEls.forEach(el=>{
+      const sym = el.dataset.sym;
+      const p   = priceMap[sym];
+      if(!p) return;
+      // Check if price actually changed before updating DOM
+      const cur = el.querySelector('.live-ltp');
+      const newLtp = '₹'+p.ltp.toFixed(2);
+      if(cur && cur.textContent === newLtp) return; // no change
+
+      el.innerHTML = `
+        <span class="live-ltp">${newLtp}</span>
+        ${p.chg!==0?`<span class="${p.chg>=0?'pos':'neg'}" style="margin-left:6px">${p.chg>=0?'+':''}${p.chg.toFixed(2)}%</span>`:''}
+      `;
+    });
+    
+    // Also update topbar Nifty/VIX
+    const mktFull = g(data,'marketContext','MarketContext');
+    if(mktFull) updateTopbar(mktFull);
+    
+  }catch(e){ /* silent fail — full loadDash will catch it */ }
+  finally{ _liveTickRunning=false; }
+}
+
 // ── Init ───────────────────────────────────────────────
 loadDash();
-setInterval(loadDash,30000);
+setInterval(loadDash, 30000);       // full card rebuild every 30s
+setInterval(livePriceTick, 3000);   // price-only refresh every 3s
 </script>
 </body>
 </html>
